@@ -74,7 +74,9 @@ const isProd = process.env.NODE_ENV === 'production';
 
 const allowedOrigins = [
   'https://evclinicproject.netlify.app',
-  'https://ev-clinic.wenbear.online'
+  'https://ev-clinic.wenbear.online',
+  'http://localhost:5174',
+  'http://localhost:5173'
 ];
 
 app.use(
