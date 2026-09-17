@@ -72,10 +72,15 @@ app.use(compression());
 
 const isProd = process.env.NODE_ENV === 'production';
 
+const allowedOrigins = [
+  'https://evclinicproject.netlify.app',
+  'https://ev-clinic.wenbear.online'
+];
+
 app.use(
   cors({
     origin: isProd
-      ? 'https://ev-clinic.wenbear.online' // 👉 replace with your frontend URL
+      ? allowedOrigins
       : true, // allow all in development
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
