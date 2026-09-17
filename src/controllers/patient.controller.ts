@@ -11,7 +11,7 @@ export const getMyAppointments = async (req: Request, res: Response, next: NextF
         const authReq = req as AuthRequest;
         const userId = authReq.user!.id;
         const email = authReq.user!.email;
-        const clinicId = authReq.user!.clinicId;
+        const clinicId = authReq.clinicId || (req.headers['x-clinic-id'] ? Number(req.headers['x-clinic-id']) : authReq.user?.clinicId);
         const appointments = await patientService.getMyAppointments(userId, email, clinicId);
         res.json({ success: true, data: appointments });
     } catch (error) {
@@ -36,7 +36,7 @@ export const getMyMedicalRecords = async (req: Request, res: Response, next: Nex
         const authReq = req as AuthRequest;
         const userId = authReq.user!.id;
         const email = authReq.user!.email;
-        const clinicId = authReq.user!.clinicId;
+        const clinicId = authReq.clinicId || (req.headers['x-clinic-id'] ? Number(req.headers['x-clinic-id']) : authReq.user?.clinicId);
         const records = await patientService.getMyMedicalRecords(userId, email, clinicId);
         res.json({ success: true, data: records });
     } catch (error) {
@@ -49,7 +49,7 @@ export const getMyInvoices = async (req: Request, res: Response, next: NextFunct
         const authReq = req as AuthRequest;
         const userId = authReq.user!.id;
         const email = authReq.user!.email;
-        const clinicId = authReq.user!.clinicId;
+        const clinicId = authReq.clinicId || (req.headers['x-clinic-id'] ? Number(req.headers['x-clinic-id']) : authReq.user?.clinicId);
         const invoices = await patientService.getMyInvoices(userId, email, clinicId);
         res.json({ success: true, data: invoices });
     } catch (error) {
@@ -62,7 +62,7 @@ export const getMyActivity = async (req: Request, res: Response, next: NextFunct
         const authReq = req as AuthRequest;
         const userId = authReq.user!.id;
         const email = authReq.user!.email;
-        const clinicId = authReq.user!.clinicId;
+        const clinicId = authReq.clinicId || (req.headers['x-clinic-id'] ? Number(req.headers['x-clinic-id']) : authReq.user?.clinicId);
         const activities = await patientService.getMyActivity(userId, email, clinicId);
         res.json({ success: true, data: activities });
     } catch (error) {
@@ -96,7 +96,8 @@ export const getClinicDoctors = async (req: Request, res: Response, next: NextFu
 export const getClinicBookingDetails = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { clinicId } = req.params;
-        const details = await patientService.getClinicBookingDetails(Number(clinicId));
+        const { date } = req.query;
+        const details = await patientService.getClinicBookingDetails(Number(clinicId), date as string);
         res.json({ success: true, data: details });
     } catch (error) {
         next(error);
@@ -137,8 +138,9 @@ export const getMyDocuments = async (req: Request, res: Response, next: NextFunc
     try {
         const authReq = req as AuthRequest;
         const email = authReq.user!.email;
-        const clinicId = authReq.user!.clinicId;
-        const documents = await patientService.getMyDocuments(email, clinicId);
+        const clinicId = authReq.clinicId || (req.headers['x-clinic-id'] ? Number(req.headers['x-clinic-id']) : authReq.user?.clinicId);
+        const userId = authReq.user!.id;
+        const documents = await patientService.getMyDocuments(email, clinicId, userId);
         res.json({ success: true, data: documents });
     } catch (error) {
         next(error);

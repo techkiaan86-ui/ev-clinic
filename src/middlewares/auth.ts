@@ -129,6 +129,12 @@ export const ensureClinicContext = async (req: AuthRequest, res: Response, next:
             return next();
         }
 
+        // For PATIENT role, use explicit header selection or token clinicId
+        if (req.user?.role === 'PATIENT') {
+            req.clinicId = headerId || clinicId;
+            return next();
+        }
+
         if (!clinicId && headerId) {
             // Check if user belongs to this clinic
             const membership = await prisma.clinicstaff.findFirst({

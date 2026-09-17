@@ -155,6 +155,34 @@ export const addStaff = async (clinicId: number, data: any) => {
     try {
         const { email, password, name, roles, phone, department, specialty } = data;
 
+        // Fetch clinic enabled modules
+        const clinicData = await prisma.clinic.findUnique({
+            where: { id: clinicId },
+            select: { modules: true }
+        });
+
+        let enabledModules: any = { pharmacy: true, radiology: true, laboratory: true, billing: true };
+        if (clinicData?.modules) {
+            try {
+                enabledModules = typeof clinicData.modules === 'string' ? JSON.parse(clinicData.modules) : clinicData.modules;
+            } catch (e) { }
+        }
+
+        // Validate requested roles against enabled modules
+        const requestedRoles = Array.isArray(roles) ? roles : [roles];
+        for (const r of requestedRoles) {
+            const rUpper = String(r).toUpperCase();
+            if ((rUpper === 'PHARMACY' || rUpper === 'PHARMACIST') && enabledModules.pharmacy === false) {
+                throw new AppError('Pharmacy module is disabled for this clinic. Cannot assign Pharmacy role.', 400);
+            }
+            if ((rUpper === 'LAB' || rUpper === 'LABORATORY') && (enabledModules.laboratory === false || enabledModules.lab === false)) {
+                throw new AppError('Laboratory module is disabled for this clinic. Cannot assign Laboratory role.', 400);
+            }
+            if (rUpper === 'RADIOLOGY' && enabledModules.radiology === false) {
+                throw new AppError('Radiology module is disabled for this clinic. Cannot assign Radiology role.', 400);
+            }
+        }
+
         // Map common variations to valid Enum values
         let primaryRoleRaw = (roles && roles.length > 0) ? roles[0].toUpperCase() : 'RECEPTIONIST';
         if (primaryRoleRaw === 'LABORATORY') primaryRoleRaw = 'LAB';

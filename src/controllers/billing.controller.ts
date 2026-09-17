@@ -9,7 +9,11 @@ export const getAccountingDashboardStats = asyncHandler(async (req: AuthRequest,
 });
 
 export const getInvoices = asyncHandler(async (req: AuthRequest, res: Response) => {
-    const invoices = await billingService.getInvoices(req.clinicId!);
+    const { date, patientName, search } = req.query;
+    const invoices = await billingService.getInvoices(req.clinicId!, {
+        date: date as string,
+        patientName: (patientName || search) as string
+    });
     res.status(200).json({ status: 'success', data: invoices });
 });
 
@@ -27,3 +31,10 @@ export const getPendingItems = asyncHandler(async (req: AuthRequest, res: Respon
     const items = await billingService.getPendingBillingItems(req.clinicId!, Number(req.params.patientId));
     res.status(200).json({ status: 'success', data: items });
 });
+
+export const markItemOutside = asyncHandler(async (req: AuthRequest, res: Response) => {
+    const { type, id } = req.params;
+    const result = await billingService.markItemOutside(req.clinicId!, Number(id), type as string);
+    res.status(200).json({ status: 'success', data: result });
+});
+

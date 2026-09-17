@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../utils/AppError.js';
 import bcrypt from 'bcryptjs';
+import { isSlotConfirmed, normalizeTime } from '../utils/slotLock.js';
 
 interface CreateAppointmentData {
     clinicId: number;
@@ -13,11 +14,16 @@ interface CreateAppointmentData {
 }
 
 export const getMyAppointments = async (userId: number, email: string, clinicId?: number) => {
-    const whereClause: any = {
-        OR: [
-            { email: email },
-        ]
-    };
+    let userPhone: string | null = null;
+    if (userId) {
+        const u = await prisma.user.findUnique({ where: { id: userId }, select: { phone: true } });
+        userPhone = u?.phone || null;
+    }
+
+    const patientConditions: any[] = [{ email }];
+    if (userPhone) patientConditions.push({ phone: userPhone });
+
+    const whereClause: any = { OR: patientConditions };
     if (clinicId) whereClause.clinicId = clinicId;
 
     const patientRecords = await prisma.patient.findMany({
@@ -80,7 +86,16 @@ export const cancelAppointment = async (appointmentId: number, email: string) =>
 };
 
 export const getMyMedicalRecords = async (userId: number, email: string, clinicId?: number) => {
-    const whereClause: any = { email: email };
+    let userPhone: string | null = null;
+    if (userId) {
+        const u = await prisma.user.findUnique({ where: { id: userId }, select: { phone: true } });
+        userPhone = u?.phone || null;
+    }
+
+    const patientConditions: any[] = [{ email }];
+    if (userPhone) patientConditions.push({ phone: userPhone });
+
+    const whereClause: any = { OR: patientConditions };
     if (clinicId) whereClause.clinicId = clinicId;
 
     const patientRecords = await prisma.patient.findMany({
@@ -166,8 +181,17 @@ export const getMyMedicalRecords = async (userId: number, email: string, clinicI
 
 };
 
-export const getMyDocuments = async (email: string, clinicId?: number) => {
-    const whereClause: any = { email };
+export const getMyDocuments = async (email: string, clinicId?: number, userId?: number) => {
+    let userPhone: string | null = null;
+    if (userId) {
+        const u = await prisma.user.findUnique({ where: { id: userId }, select: { phone: true } });
+        userPhone = u?.phone || null;
+    }
+
+    const patientConditions: any[] = [{ email }];
+    if (userPhone) patientConditions.push({ phone: userPhone });
+
+    const whereClause: any = { OR: patientConditions };
     if (clinicId) whereClause.clinicId = clinicId;
 
     const patients = await prisma.patient.findMany({
@@ -281,7 +305,16 @@ export const deletePatientDocument = async (recordId: number, clinicId?: number,
 };
 
 export const getMyInvoices = async (userId: number, email: string, clinicId?: number) => {
-    const whereClause: any = { email: email };
+    let userPhone: string | null = null;
+    if (userId) {
+        const u = await prisma.user.findUnique({ where: { id: userId }, select: { phone: true } });
+        userPhone = u?.phone || null;
+    }
+
+    const patientConditions: any[] = [{ email }];
+    if (userPhone) patientConditions.push({ phone: userPhone });
+
+    const whereClause: any = { OR: patientConditions };
     if (clinicId) whereClause.clinicId = clinicId;
 
     const patientRecords = await prisma.patient.findMany({
@@ -319,7 +352,16 @@ export const getMyInvoices = async (userId: number, email: string, clinicId?: nu
 };
 
 export const getMyActivity = async (userId: number, email: string, clinicId?: number) => {
-    const whereClause: any = { email };
+    let userPhone: string | null = null;
+    if (userId) {
+        const u = await prisma.user.findUnique({ where: { id: userId }, select: { phone: true } });
+        userPhone = u?.phone || null;
+    }
+
+    const patientConditions: any[] = [{ email }];
+    if (userPhone) patientConditions.push({ phone: userPhone });
+
+    const whereClause: any = { OR: patientConditions };
     if (clinicId) whereClause.clinicId = clinicId;
 
     const patients = await prisma.patient.findMany({
@@ -435,6 +477,12 @@ export const bookAppointment = async (userId: number, email: string, data: Creat
         });
     }
 
+    // Check if slot is already confirmed and locked for another patient
+    const alreadyLocked = await isSlotConfirmed(prisma, data.clinicId, data.date, data.time);
+    if (alreadyLocked) {
+        throw new AppError(`The selected time slot (${data.time}) is already confirmed and locked for another patient. Please choose a different time slot.`, 400);
+    }
+
     // 2. Create appointment
     const appointment = await prisma.appointment.create({
         data: {
@@ -529,6 +577,12 @@ export const publicBookAppointment = async (data: any) => {
             throw new AppError('Invalid date format provided', 400);
         }
 
+        // Check if slot is already confirmed and locked
+        const alreadyLocked = await isSlotConfirmed(prisma, Number(clinicId), appointmentDate, time);
+        if (alreadyLocked) {
+            throw new AppError(`The selected time slot (${time}) is already confirmed and locked for another patient. Please choose a different time slot.`, 400);
+        }
+
         // 3. Create Appointment
         const appointment = await prisma.appointment.create({
             data: {
@@ -579,7 +633,7 @@ export const getClinicDoctors = async (clinicId: number) => {
     }));
 };
 
-export const getClinicBookingDetails = async (clinicId: number) => {
+export const getClinicBookingDetails = async (clinicId: number, date?: string) => {
     const clinic = await prisma.clinic.findUnique({
         where: { id: clinicId },
         select: { bookingConfig: true, name: true }
@@ -612,10 +666,35 @@ export const getClinicBookingDetails = async (clinicId: number) => {
         specialty: d.specialty || 'General Practitioner'
     }));
 
+    let rawSlots = config?.timeSlots || ['09:00 AM', '10:00 AM', '11:00 AM', '12:00 PM', '01:00 PM', '02:00 PM', '03:00 PM', '04:00 PM', '05:00 PM'];
+
+    // Filter out confirmed & locked slots if date is provided
+    if (date) {
+        let dateObj = new Date(date);
+        if (!isNaN(dateObj.getTime())) {
+            const startOfDay = new Date(dateObj);
+            startOfDay.setHours(0, 0, 0, 0);
+            const endOfDay = new Date(dateObj);
+            endOfDay.setHours(23, 59, 59, 999);
+
+            const confirmedAppts = await prisma.appointment.findMany({
+                where: {
+                    clinicId,
+                    date: { gte: startOfDay, lte: endOfDay },
+                    status: { in: ['Confirmed', 'Approved', 'Checked In', 'Completed', 'CONFIRMED', 'APPROVED', 'CHECKED IN', 'COMPLETED'] }
+                },
+                select: { time: true }
+            });
+
+            const lockedNorms = new Set(confirmedAppts.map(a => normalizeTime(a.time)));
+            rawSlots = rawSlots.filter((slot: string) => !lockedNorms.has(normalizeTime(slot)));
+        }
+    }
+
     // Return the combined details
     return {
         doctors: availableDoctors,
-        timeSlots: config?.timeSlots || ['09:00 AM', '10:00 AM', '11:00 AM', '12:00 PM', '01:00 PM', '02:00 PM', '03:00 PM', '04:00 PM', '05:00 PM'],
+        timeSlots: rawSlots,
         offDays: config?.offDays || [],
         services: config?.services || ['Consultation'],
         headerTitle: config?.headerTitle || 'Appointment Booking',

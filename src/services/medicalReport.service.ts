@@ -197,18 +197,24 @@ export const medicalReportService = {
         });
     },
 
-    async getReportsByPatientEmail(email: string) {
+    async getReportsByPatientEmail(email: string, clinicId?: number) {
         // Resolve all patient records matching this email (a user may have multiple)
+        const wherePatient: any = { email };
+        if (clinicId) wherePatient.clinicId = clinicId;
+
         const patientRecords = await prisma.patient.findMany({
-            where: { email },
+            where: wherePatient,
             select: { id: true }
         });
         const patientIds = patientRecords.map((p: any) => p.id);
 
         if (patientIds.length === 0) return [];
 
+        const whereReports: any = { patientId: { in: patientIds } };
+        if (clinicId) whereReports.clinicId = clinicId;
+
         return prisma.medical_report.findMany({
-            where: { patientId: { in: patientIds } },
+            where: whereReports,
             include: {
                 doctor: { select: { id: true, name: true } },
                 clinic: { select: { id: true, name: true } },

@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { AppError } from '../utils/AppError.js';
+import { isSlotConfirmed, normalizeTime } from '../utils/slotLock.js';
 
 const prisma = new PrismaClient();
 
@@ -78,6 +79,28 @@ export const getDoctorAvailability = async (doctorId: number, date?: string) => 
         } catch (e) { }
     }
 
+    if (date) {
+        let dateObj = new Date(date);
+        if (!isNaN(dateObj.getTime())) {
+            const startOfDay = new Date(dateObj);
+            startOfDay.setHours(0, 0, 0, 0);
+            const endOfDay = new Date(dateObj);
+            endOfDay.setHours(23, 59, 59, 999);
+
+            const confirmedAppts = await prisma.appointment.findMany({
+                where: {
+                    clinicId: staff.clinicId,
+                    date: { gte: startOfDay, lte: endOfDay },
+                    status: { in: ['Confirmed', 'Approved', 'Checked In', 'Completed', 'CONFIRMED', 'APPROVED', 'CHECKED IN', 'COMPLETED'] }
+                },
+                select: { time: true }
+            });
+
+            const lockedNorms = new Set(confirmedAppts.map(a => normalizeTime(a.time)));
+            config.timeSlots = config.timeSlots.filter((slot: string) => !lockedNorms.has(normalizeTime(slot)));
+        }
+    }
+
     return config;
 };
 
@@ -114,6 +137,12 @@ export const createPublicBooking = async (data: any) => {
                 status: 'Active'
             }
         });
+    }
+
+    // Check if slot is already confirmed and locked
+    const alreadyLocked = await isSlotConfirmed(prisma, Number(clinicId), date, time);
+    if (alreadyLocked) {
+        throw new AppError(`The selected time slot (${time}) is already confirmed and locked for another patient. Please choose a different time slot.`, 400);
     }
 
     // 3. Create Appointment

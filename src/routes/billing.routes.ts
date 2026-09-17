@@ -15,5 +15,6 @@ router.use(restrictTo('RECEPTIONIST', 'ADMIN', 'ACCOUNTANT', 'ACCOUNTING'));
 router.post('/', billingController.createInvoice);
 router.patch('/invoices/:id', billingController.updateInvoice);
 router.get('/pending/:patientId', billingController.getPendingItems);
+router.patch('/pending/:type/:id/outside', billingController.markItemOutside);
 
 export default router;

@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../utils/AppError.js';
+import { isSlotConfirmed } from '../utils/slotLock.js';
 
 const getNextToken = async (clinicId: number) => {
     const today = new Date();
@@ -298,40 +299,57 @@ export const getPatientAppointments = async (clinicId: number, patientId: number
 };
 
 export const updateBookingStatus = async (clinicId: number, id: number, status: string) => {
-    // First verify the appointment belongs to this clinic
-    const appointment = await prisma.appointment.findUnique({
-        where: { id }
-    });
+    return await prisma.$transaction(async (tx) => {
+        // First verify the appointment belongs to this clinic
+        const appointment = await tx.appointment.findUnique({
+            where: { id }
+        });
 
-    if (!appointment) {
-        throw new Error('Appointment not found');
-    }
-
-    if (appointment.clinicId !== clinicId) {
-        throw new Error('Unauthorized: Appointment does not belong to your clinic');
-    }
-
-    return await prisma.appointment.update({
-        where: { id },
-        data: {
-            status,
-            // Sync queueStatus if checking in via generic status update
-            ...(status === 'Checked In' ? { queueStatus: 'Checked-In' } : {})
+        if (!appointment) {
+            throw new AppError('Appointment not found', 404);
         }
+
+        if (appointment.clinicId !== clinicId) {
+            throw new AppError('Unauthorized: Appointment does not belong to your clinic', 403);
+        }
+
+        const isConfirming = ['Confirmed', 'Approved', 'Checked In', 'Completed', 'CONFIRMED', 'APPROVED'].includes(status);
+        if (isConfirming) {
+            const alreadyLocked = await isSlotConfirmed(tx, clinicId, appointment.date, appointment.time, id);
+            if (alreadyLocked) {
+                throw new AppError(`Cannot confirm appointment: The time slot (${appointment.time}) is already confirmed and locked for another appointment.`, 409);
+            }
+        }
+
+        return await tx.appointment.update({
+            where: { id },
+            data: {
+                status,
+                // Sync queueStatus if checking in via generic status update
+                ...(status === 'Checked In' ? { queueStatus: 'Checked-In' } : {})
+            }
+        });
     });
 };
 
 export const approveBooking = async (bookingId: number) => {
-    const booking = await prisma.appointment.findUnique({
-        where: { id: bookingId },
-        include: { patient: true }
-    });
+    return await prisma.$transaction(async (tx) => {
+        const booking = await tx.appointment.findUnique({
+            where: { id: bookingId },
+            include: { patient: true }
+        });
 
-    if (!booking) throw new AppError('Booking not found', 404);
+        if (!booking) throw new AppError('Booking not found', 404);
 
-    return await prisma.appointment.update({
-        where: { id: bookingId },
-        data: { status: 'Approved' }
+        const alreadyLocked = await isSlotConfirmed(tx, booking.clinicId, booking.date, booking.time, bookingId);
+        if (alreadyLocked) {
+            throw new AppError(`Cannot approve appointment: The time slot (${booking.time}) is already confirmed and locked for another appointment.`, 409);
+        }
+
+        return await tx.appointment.update({
+            where: { id: bookingId },
+            data: { status: 'Approved' }
+        });
     });
 };
 

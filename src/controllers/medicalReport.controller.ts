@@ -52,7 +52,8 @@ export const medicalReportController = {
                 reports = await medicalReportService.getReportsByClinic(clinicId);
             } else if (role === 'PATIENT') {
                 const email = (req as any).user.email;
-                reports = await medicalReportService.getReportsByPatientEmail(email);
+                const activeClinicId = (req as any).clinicId || (req.headers['x-clinic-id'] ? Number(req.headers['x-clinic-id']) : (req as any).user?.clinicId);
+                reports = await medicalReportService.getReportsByPatientEmail(email, activeClinicId);
             } else {
                 return res.status(403).json({ success: false, message: 'Unauthorized' });
             }
