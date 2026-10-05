@@ -579,6 +579,23 @@ export const impersonate = async (superAdminId: number, targetUserId: number, ip
     const firstStaffRecord = targetUser.clinicstaff[0];
     const firstClinicId = firstStaffRecord?.clinicId;
 
+    const targetClinic = firstClinicId ? await prisma.clinic.findUnique({
+        where: { id: firstClinicId }
+    }) : null;
+
+    const now = new Date();
+    const isExpired = targetClinic?.subscriptionEnd ? now > new Date(targetClinic.subscriptionEnd) : false;
+    const daysRemaining = targetClinic?.subscriptionEnd
+        ? Math.ceil((new Date(targetClinic.subscriptionEnd).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+        : 0;
+
+    let modules = { pharmacy: true, radiology: true, laboratory: true, billing: true };
+    if (targetClinic?.modules) {
+        try {
+            modules = typeof targetClinic.modules === 'string' ? JSON.parse(targetClinic.modules) : targetClinic.modules;
+        } catch (e) { }
+    }
+
     // Derive the best role to represent this user
     let targetRole = targetUser.role;
     if (targetUser.role === 'RECEPTIONIST') {
@@ -636,6 +653,19 @@ export const impersonate = async (superAdminId: number, targetUserId: number, ip
                 role: s.role
             }))
         },
+        clinic: targetClinic ? {
+            id: targetClinic.id,
+            name: targetClinic.name,
+            location: targetClinic.location || '',
+            role: targetRole,
+            modules,
+            subscriptionPlan: targetClinic.subscriptionPlan,
+            subscriptionEnd: targetClinic.subscriptionEnd,
+            daysRemaining: daysRemaining > 0 ? daysRemaining : 0,
+            isExpired: isExpired || daysRemaining <= 0 || (targetClinic.status || '').toLowerCase() !== 'active' || !targetClinic.isActive,
+            status: targetClinic.status,
+            isActive: targetClinic.isActive !== false
+        } : null,
         token
     };
 };
