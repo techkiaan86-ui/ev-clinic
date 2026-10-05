@@ -155,6 +155,26 @@ export const ensureClinicContext = async (req: AuthRequest, res: Response, next:
             return next(new AppError('No clinic context found. Please select a clinic.', 400));
         }
 
+        // Validate license expiry for non-superadmin
+        if (req.user?.role !== 'SUPER_ADMIN') {
+            const clinic = await prisma.clinic.findUnique({
+                where: { id: clinicId },
+                select: { status: true, subscriptionEnd: true, isActive: true }
+            });
+
+            if (clinic) {
+                const now = new Date();
+                const isExpired = clinic.subscriptionEnd ? now > new Date(clinic.subscriptionEnd) : false;
+                const daysRemaining = clinic.subscriptionEnd
+                    ? Math.ceil((new Date(clinic.subscriptionEnd).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+                    : 0;
+
+                if (isExpired || daysRemaining <= 0 || (clinic.status || '').toLowerCase() !== 'active' || !clinic.isActive) {
+                    return next(new AppError('LICENSE_EXPIRED: Please contact Exclusive vision for your license.', 403));
+                }
+            }
+        }
+
         req.clinicId = clinicId;
         next();
     } catch (error) {

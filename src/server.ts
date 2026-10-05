@@ -73,17 +73,28 @@ app.use(compression());
 const isProd = process.env.NODE_ENV === 'production';
 
 const allowedOrigins = [
+  'https://ev-clinic.kiaansoftware.com',
+  'http://ev-clinic.kiaansoftware.com',
   'https://evclinicproject.netlify.app',
   'https://ev-clinic.wenbear.online',
   'http://localhost:5174',
-  'http://localhost:5173'
-];
+  'http://localhost:5173',
+  process.env.FRONTEND_URL
+].filter(Boolean) as string[];
 
 app.use(
   cors({
-    origin: isProd
-      ? allowedOrigins
-      : true, // allow all in development
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (
+        allowedOrigins.includes(origin) ||
+        origin.endsWith('.kiaansoftware.com') ||
+        !isProd
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, true);
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: [

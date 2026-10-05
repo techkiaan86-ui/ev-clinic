@@ -175,8 +175,13 @@ export const createPublicBooking = async (data: any) => {
 };
 
 export const getLiveTokens = async (subdomain: string) => {
-    const clinic = await prisma.clinic.findUnique({
-        where: { subdomain },
+    const clinic = await prisma.clinic.findFirst({
+        where: {
+            OR: [
+                { subdomain: subdomain },
+                { id: !isNaN(Number(subdomain)) ? Number(subdomain) : -1 }
+            ]
+        },
         select: {
             id: true,
             name: true,
@@ -187,30 +192,61 @@ export const getLiveTokens = async (subdomain: string) => {
     });
     if (!clinic) throw new AppError('Clinic not found', 404);
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
 
     const appointments = await prisma.appointment.findMany({
         where: {
             clinicId: clinic.id,
-            date: {
-                gte: today,
-                lte: new Date(new Date().setHours(23, 59, 59, 999))
-            },
-            tokenNumber: { not: null }
+            status: { notIn: ['Cancelled', 'CANCELLED'] },
+            OR: [
+                {
+                    date: {
+                        gte: todayStart,
+                        lte: todayEnd
+                    }
+                },
+                {
+                    createdAt: {
+                        gte: todayStart,
+                        lte: todayEnd
+                    }
+                },
+                {
+                    queueStatus: { in: ['Checked In', 'Checked-In', 'Waiting', 'In Consultation', 'In-Consultation', 'Pending', 'Pending-Payment'] }
+                }
+            ]
         },
         include: {
-            patient: { select: { name: true } }
+            patient: { select: { name: true, phone: true } },
+            doctor: {
+                include: {
+                    user: { select: { name: true } }
+                }
+            }
         },
-        orderBy: { tokenNumber: 'asc' }
+        orderBy: [
+            { tokenNumber: 'asc' },
+            { createdAt: 'asc' }
+        ]
     });
 
-    const queue = appointments.map(a => ({
-        tokenNumber: a.tokenNumber,
-        status: a.queueStatus || a.status,
-        patientName: a.patient.name,
-        id: a.id
-    }));
+    const queue = appointments.map((a, idx) => {
+        let doctorName = 'General';
+        if (a.doctor?.user?.name) {
+            doctorName = `Dr. ${a.doctor.user.name}`;
+        }
+        return {
+            id: a.id,
+            tokenNumber: a.tokenNumber !== null && a.tokenNumber !== undefined ? a.tokenNumber : (idx + 1),
+            status: a.queueStatus || a.status || 'Waiting',
+            patientName: a.patient?.name || 'Patient',
+            doctorName,
+            time: a.time
+        };
+    });
 
     return { clinic, queue };
 };

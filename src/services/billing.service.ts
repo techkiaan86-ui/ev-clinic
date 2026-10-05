@@ -163,6 +163,142 @@ export const getPendingBillingItems = async (clinicId: number, patientId: number
     };
 };
 
+export const getAllPendingBillingPatients = async (clinicId: number) => {
+    const clinic = await prisma.clinic.findUnique({
+        where: { id: clinicId },
+        select: { modules: true }
+    });
+
+    const invoicedItems = await prisma.invoice_item.findMany({
+        where: {
+            invoice: {
+                clinicId,
+                status: { in: ['Pending', 'Paid'] }
+            }
+        },
+        select: { serviceId: true, serviceType: true }
+    });
+
+    const invoicedApptIds = new Set(
+        invoicedItems
+            .filter(i => i.serviceType === 'consultation' && i.serviceId)
+            .map(i => i.serviceId)
+    );
+    const invoicedOrderIds = new Set(
+        invoicedItems
+            .filter(i => i.serviceType !== 'consultation' && i.serviceId)
+            .map(i => i.serviceId)
+    );
+
+    const appointments = await prisma.appointment.findMany({
+        where: {
+            clinicId,
+            isPaid: false,
+            billingAmount: { gt: 0 },
+            queueStatus: { notIn: ['Outside', 'outside'] },
+            status: { notIn: ['Outside', 'outside'] }
+        },
+        include: {
+            patient: true
+        },
+        orderBy: { date: 'desc' }
+    });
+
+    const pendingAppointments = appointments.filter(a => !invoicedApptIds.has(a.id));
+
+    const orders = await prisma.service_order.findMany({
+        where: {
+            clinicId,
+            paymentStatus: 'Pending'
+        },
+        include: {
+            patient: true
+        },
+        orderBy: { createdAt: 'desc' }
+    });
+
+    const pendingOrders = orders.filter(o => {
+        if (invoicedOrderIds.has(o.id)) return false;
+        if (!isModuleEnabled(clinic?.modules, o.type)) return false;
+        return true;
+    });
+
+    const patientMap = new Map<number, any>();
+
+    for (const appt of pendingAppointments) {
+        if (!appt.patient) continue;
+        const pId = appt.patientId;
+        if (!patientMap.has(pId)) {
+            patientMap.set(pId, {
+                patientId: pId,
+                patient: appt.patient,
+                consultations: [],
+                orders: [],
+                totalAmount: 0
+            });
+        }
+        const data = patientMap.get(pId);
+        data.consultations.push({
+            id: appt.id,
+            type: 'consultation',
+            description: `Consultation - ${appt.service || 'General'}`,
+            amount: Number(appt.billingAmount || 0),
+            date: appt.date
+        });
+        data.totalAmount += Number(appt.billingAmount || 0);
+    }
+
+    for (const order of pendingOrders) {
+        if (!order.patient) continue;
+        const pId = order.patientId;
+        if (!patientMap.has(pId)) {
+            patientMap.set(pId, {
+                patientId: pId,
+                patient: order.patient,
+                consultations: [],
+                orders: [],
+                totalAmount: 0
+            });
+        }
+        const data = patientMap.get(pId);
+        let actualAmount = Number(order.amount || 0);
+        let description = `${order.type} Order: ${order.testName}`;
+
+        if (order.type.toUpperCase() === 'PHARMACY' && order.result) {
+            try {
+                const parsed = JSON.parse(order.result);
+                if (parsed.amount !== undefined) {
+                    actualAmount = Number(parsed.amount);
+                } else if (parsed.totalAmount !== undefined) {
+                    actualAmount = Number(parsed.totalAmount);
+                } else if (parsed.unitPrice && parsed.quantity) {
+                    actualAmount = Number(parsed.unitPrice) * Number(parsed.quantity);
+                }
+                if (parsed.items && Array.isArray(parsed.items)) {
+                    description = `Pharmacy: ${parsed.items.join(', ')}`;
+                } else if (parsed.testName && parsed.quantity) {
+                    description = `Pharmacy: ${parsed.testName} x${parsed.quantity}`;
+                } else if (parsed.items) {
+                    description = `Pharmacy: ${parsed.items}`;
+                }
+            } catch (e) {
+                console.error("Failed to parse pharmacy order result for billing:", order.id);
+            }
+        }
+
+        data.orders.push({
+            id: order.id,
+            type: order.type.toLowerCase(),
+            description,
+            amount: actualAmount,
+            date: order.createdAt
+        });
+        data.totalAmount += actualAmount;
+    }
+
+    return Array.from(patientMap.values());
+};
+
 export const getAccountingDashboardStats = async (clinicId: number) => {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);

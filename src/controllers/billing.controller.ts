@@ -32,6 +32,11 @@ export const getPendingItems = asyncHandler(async (req: AuthRequest, res: Respon
     res.status(200).json({ status: 'success', data: items });
 });
 
+export const getAllPendingPatients = asyncHandler(async (req: AuthRequest, res: Response) => {
+    const pendingPatients = await billingService.getAllPendingBillingPatients(req.clinicId!);
+    res.status(200).json({ status: 'success', data: pendingPatients });
+});
+
 export const markItemOutside = asyncHandler(async (req: AuthRequest, res: Response) => {
     const { type, id } = req.params;
     const result = await billingService.markItemOutside(req.clinicId!, Number(id), type as string);

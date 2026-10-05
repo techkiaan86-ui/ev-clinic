@@ -365,6 +365,7 @@ export const getMyClinics = async (userId: number) => {
     // For other users, return clinics they are assigned to
     // Deduplicate by clinic id (user can have multiple roles in same clinic)
     const seen = new Set<number>();
+    const now = new Date();
     return staffRecords
         .filter((record: any) => {
             if (seen.has(record.clinic.id)) return false;
@@ -383,13 +384,22 @@ export const getMyClinics = async (userId: number) => {
                 }
             }
 
+            const isExpired = record.clinic.subscriptionEnd ? now > new Date(record.clinic.subscriptionEnd) : false;
+            const daysRemaining = record.clinic.subscriptionEnd
+                ? Math.ceil((new Date(record.clinic.subscriptionEnd).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+                : 0;
+
             return {
                 id: record.clinic.id,
                 name: record.clinic.name,
                 role: record.role,
                 modules,
                 location: record.clinic.location,
-                status: record.clinic.status
+                status: record.clinic.status,
+                subscriptionPlan: record.clinic.subscriptionPlan,
+                subscriptionEnd: record.clinic.subscriptionEnd,
+                daysRemaining: daysRemaining > 0 ? daysRemaining : 0,
+                isExpired: isExpired || daysRemaining <= 0 || (record.clinic.status || '').toLowerCase() !== 'active' || !record.clinic.isActive
             };
         });
 };
@@ -405,15 +415,21 @@ export const selectClinic = async (userId: number, clinicId: number, role: strin
     if (isPatient && !isSuperAdmin) {
         const patientRecord = await prisma.patient.findFirst({
             where: { email: user.email, clinicId },
-            include: { clinic: { select: { id: true, name: true, status: true, location: true } } }
+            include: { clinic: { select: { id: true, name: true, status: true, location: true, subscriptionEnd: true, isActive: true } } }
         });
 
         if (!patientRecord) {
             throw new AppError('You are not registered in this clinic', 403);
         }
 
-        if ((patientRecord.clinic.status || '').toLowerCase() !== 'active') {
-            throw new AppError('This clinic is currently inactive. Please contact your clinic administrator.', 403);
+        const now = new Date();
+        const isExp = patientRecord.clinic.subscriptionEnd ? now > new Date(patientRecord.clinic.subscriptionEnd) : false;
+        const daysLeft = patientRecord.clinic.subscriptionEnd
+            ? Math.ceil((new Date(patientRecord.clinic.subscriptionEnd).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+            : 0;
+
+        if (isExp || daysLeft <= 0 || (patientRecord.clinic.status || '').toLowerCase() !== 'active' || !patientRecord.clinic.isActive) {
+            throw new AppError('LICENSE_EXPIRED: Please contact Exclusive vision for your license.', 403);
         }
 
         const token = signToken({
@@ -452,14 +468,22 @@ export const selectClinic = async (userId: number, clinicId: number, role: strin
         throw new AppError('You do not have the requested role in this clinic', 403);
     }
 
-    // Block selection of inactive clinic (SUPER_ADMIN can always proceed)
+    // Block selection of inactive / expired clinic (SUPER_ADMIN can always proceed)
     if (!isSuperAdmin) {
         const clinic = await prisma.clinic.findUnique({
             where: { id: clinicId },
-            select: { status: true, name: true }
+            select: { status: true, name: true, subscriptionEnd: true, isActive: true }
         });
-        if (clinic && (clinic.status || '').toLowerCase() !== 'active') {
-            throw new AppError(`This clinic is currently inactive. Please contact your administrator.`, 403);
+        if (clinic) {
+            const now = new Date();
+            const isExp = clinic.subscriptionEnd ? now > new Date(clinic.subscriptionEnd) : false;
+            const daysLeft = clinic.subscriptionEnd
+                ? Math.ceil((new Date(clinic.subscriptionEnd).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+                : 0;
+
+            if (isExp || daysLeft <= 0 || (clinic.status || '').toLowerCase() !== 'active' || !clinic.isActive) {
+                throw new AppError('LICENSE_EXPIRED: Please contact Exclusive vision for your license.', 403);
+            }
         }
     }
 
@@ -676,6 +700,23 @@ export const impersonateClinic = async (superAdminId: number, clinicId: number, 
         where: { userId: targetUser.id }
     });
 
+    const targetClinic = await prisma.clinic.findUnique({
+        where: { id: clinicId }
+    });
+
+    const now = new Date();
+    const isExpired = targetClinic?.subscriptionEnd ? now > new Date(targetClinic.subscriptionEnd) : false;
+    const daysRemaining = targetClinic?.subscriptionEnd
+        ? Math.ceil((new Date(targetClinic.subscriptionEnd).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+        : 0;
+
+    let modules = { pharmacy: true, radiology: true, laboratory: true, billing: true };
+    if (targetClinic?.modules) {
+        try {
+            modules = typeof targetClinic.modules === 'string' ? JSON.parse(targetClinic.modules) : targetClinic.modules;
+        } catch (e) { }
+    }
+
     let allRoles = [targetUser.role];
     staffRecords.forEach((s: any) => {
         allRoles.push(s.role);
@@ -700,6 +741,19 @@ export const impersonateClinic = async (superAdminId: number, clinicId: number, 
                 id: s.clinicId,
                 role: s.role
             }))
+        },
+        clinic: {
+            id: clinicId,
+            name: targetClinic?.name || 'Clinic',
+            location: targetClinic?.location || '',
+            role: targetRole,
+            modules,
+            subscriptionPlan: targetClinic?.subscriptionPlan,
+            subscriptionEnd: targetClinic?.subscriptionEnd,
+            daysRemaining: daysRemaining > 0 ? daysRemaining : 0,
+            isExpired: isExpired || daysRemaining <= 0 || (targetClinic?.status || '').toLowerCase() !== 'active' || !targetClinic?.isActive,
+            status: targetClinic?.status,
+            isActive: targetClinic?.isActive !== false
         },
         token
     };

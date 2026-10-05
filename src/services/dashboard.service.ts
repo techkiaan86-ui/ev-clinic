@@ -81,10 +81,21 @@ export const getDashboardStats = async (role: string, clinicId?: number, userId?
         const staff = await prisma.clinicstaff.findFirst({ where: { userId: userId, clinicId } });
         const doctorId = staff?.id || 0;
         const [todayAppts, totalTreated, completedAppts, pendingAppts] = await Promise.all([
-            prisma.appointment.count({ where: { clinicId, doctorId, date: { gte: today, lt: tomorrow } } }),
+            prisma.appointment.count({ where: { clinicId, doctorId, status: { notIn: ['Cancelled', 'cancelled', 'Rejected'] }, date: { gte: today, lt: tomorrow } } }),
             prisma.medicalrecord.findMany({ where: { clinicId, doctorId }, distinct: ['patientId'] }).then(r => r.length),
             prisma.appointment.count({ where: { clinicId, doctorId, status: 'Completed', date: { gte: today, lt: tomorrow } } }),
-            prisma.appointment.count({ where: { clinicId, doctorId, status: { in: ['Approved', 'Confirmed', 'Checked In'] }, date: { gte: today, lt: tomorrow } } })
+            prisma.appointment.count({
+                where: {
+                    clinicId,
+                    doctorId,
+                    OR: [
+                        { status: 'Checked In' },
+                        { queueStatus: 'Checked-In' },
+                        { queueStatus: 'Checked In' }
+                    ],
+                    date: { gte: today, lt: tomorrow }
+                }
+            })
         ]);
         return {
             todayPatients: todayAppts,

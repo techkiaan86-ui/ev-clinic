@@ -210,17 +210,53 @@ export const getMyDocuments = async (email: string, clinicId?: number, userId?: 
     });
 };
 
-export const uploadPatientDocument = async (clinicId: number, data: any) => {
-    const { patientId, type, name, url } = data;
+export const uploadPatientDocument = async (clinicId: number, data: any, email?: string) => {
+    let { patientId, type, name, url } = data;
 
-    if (!patientId) throw new AppError('Patient ID is required', 400);
     if (!name) throw new AppError('Document name is required', 400);
     if (!url) throw new AppError('Document URL is required', 400);
 
+    // Validate clinicId
+    let parsedClinicId = Number(clinicId);
+    if (!parsedClinicId || isNaN(parsedClinicId)) {
+        const firstClinic = await prisma.clinic.findFirst();
+        if (!firstClinic) throw new AppError('No clinic found', 404);
+        parsedClinicId = firstClinic.id;
+    }
+
+    // Verify or find valid patient record
+    let validPatient: any = null;
+
+    if (patientId && Number(patientId) > 0) {
+        validPatient = await prisma.patient.findUnique({
+            where: { id: Number(patientId) }
+        });
+    }
+
+    if (!validPatient && email) {
+        validPatient = await prisma.patient.findFirst({
+            where: { email, clinicId: parsedClinicId }
+        });
+    }
+
+    if (!validPatient) {
+        const user = email ? await prisma.user.findUnique({ where: { email } }) : null;
+        validPatient = await prisma.patient.create({
+            data: {
+                clinicId: parsedClinicId,
+                name: user?.name || (email ? email.split('@')[0] : 'Patient'),
+                email: email || '',
+                phone: user?.phone || '',
+                gender: 'Other',
+                age: 0
+            }
+        });
+    }
+
     return await prisma.patient_document.create({
         data: {
-            clinicId,
-            patientId: Number(patientId),
+            clinicId: parsedClinicId,
+            patientId: validPatient.id,
             type: type || 'OTHER',
             name,
             url

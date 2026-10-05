@@ -5,7 +5,7 @@ import { startTime } from '../utils/system.js';
 
 // ==================== CLINICS ====================
 export const createClinic = async (data: any) => {
-    const { name, location, email, contact, subscriptionDuration = 1, subscriptionPlan = 'Monthly', manualDays = 30, password, numberOfUsers = 5 } = data;
+    const { name, location, email, contact, subscriptionDuration = 1, subscriptionPlan = 'Monthly', manualDays = 30, trialDays = 7, password, numberOfUsers = 5 } = data;
     console.log(data.logo)
     if (!name || !email || !contact || !password) {
         throw new AppError('Name, Email, Contact Number, and Password are all required.', 400);
@@ -22,7 +22,8 @@ export const createClinic = async (data: any) => {
     const start = new Date();
     const end = new Date();
     if (subscriptionPlan === 'Trial') {
-        end.setDate(start.getDate() + 7);
+        const tDays = Number(data.trialDays || trialDays || 7);
+        end.setDate(start.getDate() + tDays);
     } else if (subscriptionPlan === 'Manual') {
         end.setDate(start.getDate() + Number(manualDays));
     } else {
@@ -337,7 +338,26 @@ export const getSuperAdminReports = async (startDate?: string, endDate?: string)
 
 export const updateClinic = async (id: number, data: any) => {
     // Extract password and other non-clinic fields
-    const { password, subscriptionDuration, manualDays, subscriptionAmount, gstPercent, numberOfUsers, ...clinicData } = data;
+    const {
+        password,
+        subscriptionDuration,
+        manualDays,
+        trialDays,
+        subscriptionAmount,
+        gstPercent,
+        numberOfUsers,
+        adminName,
+        adminEmail,
+        daysRemaining,
+        isExpired,
+        counts,
+        adminUser,
+        clinicstaff,
+        subscriptionInvoices,
+        _count,
+        id: dummyId,
+        ...clinicData
+    } = data;
 
     // Sanitize logo to ensure it's a string path or removed if invalid
     if (clinicData.logo && typeof clinicData.logo !== 'string') {
@@ -366,30 +386,44 @@ export const updateClinic = async (id: number, data: any) => {
         }
     }
 
+    // Update userLimit if numberOfUsers is provided
+    if (numberOfUsers !== undefined && numberOfUsers !== '') {
+        clinicData.userLimit = Number(numberOfUsers);
+    }
+
     // Handle subscription updates if provided
-    if (subscriptionDuration !== undefined || manualDays !== undefined || clinicData.subscriptionPlan) {
+    if (subscriptionDuration !== undefined || manualDays !== undefined || trialDays !== undefined || clinicData.subscriptionPlan) {
         // Fetch current clinic to get existing subscription plan if not provided
-        const currentClinic = clinicData.subscriptionPlan ? null : await prisma.clinic.findUnique({
+        const currentClinic = await prisma.clinic.findUnique({
             where: { id },
-            select: { subscriptionPlan: true, subscriptionStart: true }
+            select: { subscriptionPlan: true, subscriptionStart: true, subscriptionEnd: true }
         });
 
-        const start = clinicData.subscriptionPlan ? new Date() : (currentClinic?.subscriptionStart || new Date());
-        const end = new Date();
         const plan = clinicData.subscriptionPlan || currentClinic?.subscriptionPlan || 'Monthly';
-        const duration = subscriptionDuration || 1;
-        const days = manualDays || 30;
+        const start = clinicData.subscriptionPlan ? new Date() : (currentClinic?.subscriptionStart || new Date());
+        let end = new Date();
+        const duration = Number(subscriptionDuration) || 1;
+        const days = Number(manualDays) || 30;
+        const tDays = Number(trialDays !== undefined && trialDays !== '' ? trialDays : 7);
 
         if (plan === 'Trial') {
-            end.setDate(start.getDate() + 7);
+            end = new Date();
+            end.setDate(end.getDate() + tDays);
+            if (tDays > 0) {
+                clinicData.isActive = true;
+                clinicData.status = 'active';
+            }
         } else if (plan === 'Manual') {
-            end.setDate(start.getDate() + Number(days));
+            end = new Date();
+            end.setDate(end.getDate() + Number(days));
         } else {
-            end.setMonth(start.getMonth() + Number(duration));
+            end = new Date(start);
+            end.setMonth(end.getMonth() + Number(duration));
         }
 
         clinicData.subscriptionEnd = end;
-        if (clinicData.subscriptionPlan) {
+        clinicData.subscriptionPlan = plan;
+        if (clinicData.subscriptionPlan && !currentClinic?.subscriptionStart) {
             clinicData.subscriptionStart = start;
         }
     }

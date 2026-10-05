@@ -12,6 +12,7 @@ router.get('/dashboard-stats', billingController.getAccountingDashboardStats);
 
 // Restricted Write Actions
 router.use(restrictTo('RECEPTIONIST', 'ADMIN', 'ACCOUNTANT', 'ACCOUNTING'));
+router.get('/pending-patients', billingController.getAllPendingPatients);
 router.post('/', billingController.createInvoice);
 router.patch('/invoices/:id', billingController.updateInvoice);
 router.get('/pending/:patientId', billingController.getPendingItems);

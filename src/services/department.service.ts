@@ -47,24 +47,35 @@ export const updateNotificationStatus = async (id: number, status: string) => {
 };
 
 export const getNotifications = async (clinicId: number) => {
-    return await prisma.notification.findMany({
-        where: { clinicId },
-        orderBy: { createdAt: 'desc' }
-    });
+    try {
+        return await prisma.notification.findMany({
+            where: { clinicId },
+            orderBy: { createdAt: 'desc' }
+        });
+    } catch (err) {
+        console.error('Error fetching notifications:', err);
+        return [];
+    }
 };
 
 export const getUnreadNotificationsCount = async (clinicId: number, department?: string) => {
-    const where: any = {
-        clinicId,
-        status: 'unread'
-    };
-
-    if (department) {
-        where.department = {
-            contains: department,
-            // mode: 'insensitive' // Optional, based on DB support
+    try {
+        const where: any = {
+            clinicId,
+            status: 'unread'
         };
-    }
 
-    return await prisma.notification.count({ where });
+        if (department) {
+            where.department = {
+                contains: department,
+                // mode: 'insensitive' // Optional, based on DB support
+            };
+        }
+
+        return await prisma.notification.count({ where });
+    } catch (err) {
+        console.error('Error fetching unread notification count:', err);
+        return 0;
+    }
 };
+

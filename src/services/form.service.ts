@@ -28,7 +28,7 @@ export const getTemplateById = async (clinicId: number, templateId: number) => {
 
     return {
         ...template,
-        fields: JSON.parse(template.fields)
+        fields: typeof template.fields === 'string' ? JSON.parse(template.fields) : template.fields
     };
 };
 

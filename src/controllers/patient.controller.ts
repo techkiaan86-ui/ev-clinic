@@ -151,10 +151,12 @@ export const getMyDocuments = async (req: Request, res: Response, next: NextFunc
 export const uploadPatientDocument = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const authReq = req as AuthRequest;
-        const clinicId = authReq.clinicId!;
-        const document = await patientService.uploadPatientDocument(clinicId, req.body);
+        const clinicId = Number(req.params.clinicId || authReq.clinicId || req.body.clinicId || req.headers['x-clinic-id']);
+        const email = authReq.user?.email;
+        const document = await patientService.uploadPatientDocument(clinicId, req.body, email);
         res.json({ success: true, data: document });
     } catch (error) {
+        console.error('Error uploading patient document:', error);
         next(error);
     }
 };

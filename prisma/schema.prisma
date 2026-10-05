@@ -381,7 +381,7 @@ model patient_document {
   patientId Int
   type      String   @default("OTHER")
   name      String
-  url       String
+  url       String   @db.LongText
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
   clinic    clinic   @relation(fields: [clinicId], references: [id])

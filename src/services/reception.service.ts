@@ -1,6 +1,6 @@
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../utils/AppError.js';
-import { isSlotConfirmed } from '../utils/slotLock.js';
+import { isSlotConfirmed, isDoctorSlotBooked } from '../utils/slotLock.js';
 
 const getNextToken = async (clinicId: number) => {
     const today = new Date();
@@ -409,6 +409,14 @@ export const createBooking = async (clinicId: number, data: any) => {
     const { patientId, doctorId, date, time, fees, notes, service, status } = data;
     const finalStatus = status || 'Pending';
 
+    // Prevent double booking for the same doctor at the same time and date
+    if (doctorId && time && date) {
+        const isBooked = await isDoctorSlotBooked(prisma, clinicId, Number(doctorId), date, time);
+        if (isBooked) {
+            throw new AppError(`The selected time slot (${time}) is already booked for this doctor. Please choose a different time slot.`, 400);
+        }
+    }
+
     let tokenNumber = null;
     let queueStatus = 'Pending';
 
@@ -428,7 +436,7 @@ export const createBooking = async (clinicId: number, data: any) => {
             time: time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             status: finalStatus,
             queueStatus: queueStatus,
-            source: 'Walk-in',
+            source: data.source || 'Reception',
             billingAmount: fees ? Number(fees) : undefined,
             notes: notes || null,
             service: service || 'Consultation'

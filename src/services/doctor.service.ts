@@ -2,17 +2,23 @@ import { prisma } from '../lib/prisma.js';
 import { AppError } from '../utils/AppError.js';
 
 export const getDoctorQueue = async (clinicId: number, doctorId: number) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(today);
+    endOfDay.setHours(23, 59, 59, 999);
+
     return await prisma.appointment.findMany({
         where: {
             clinicId,
             doctorId,
-            queueStatus: 'Checked-In',
+            status: { notIn: ['Cancelled', 'cancelled', 'Rejected'] },
             date: {
-                gte: new Date(new Date().setHours(0, 0, 0, 0)),
-                lte: new Date(new Date().setHours(23, 59, 59, 999))
+                gte: today,
+                lte: endOfDay
             }
         },
-        include: { patient: true }
+        include: { patient: true },
+        orderBy: { time: 'asc' }
     });
 };
 
@@ -264,14 +270,16 @@ export const getAllAssessments = async (clinicId: number, doctorId?: number) => 
 export const getDoctorStats = async (clinicId: number, doctorId: number) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(today);
+    endOfDay.setHours(23, 59, 59, 999);
 
     const [todayAppts, totalPatientsCount, completedAppts, pendingAppts] = await Promise.all([
         prisma.appointment.count({
             where: {
                 clinicId,
                 doctorId,
-                status: { in: ['Approved', 'Confirmed', 'Checked In', 'Completed'] },
-                date: { gte: today, lte: new Date(new Date().setHours(23, 59, 59, 999)) }
+                status: { notIn: ['Cancelled', 'cancelled', 'Rejected'] },
+                date: { gte: today, lte: endOfDay }
             }
         }),
         prisma.medicalrecord.findMany({
@@ -279,10 +287,19 @@ export const getDoctorStats = async (clinicId: number, doctorId: number) => {
             distinct: ['patientId']
         }).then(res => res.length),
         prisma.appointment.count({
-            where: { clinicId, doctorId, status: 'Completed', date: { gte: today } }
+            where: { clinicId, doctorId, status: 'Completed', date: { gte: today, lte: endOfDay } }
         }),
         prisma.appointment.count({
-            where: { clinicId, doctorId, status: { in: ['Approved', 'Confirmed', 'Checked In'] }, date: { gte: today } }
+            where: {
+                clinicId,
+                doctorId,
+                OR: [
+                    { status: 'Checked In' },
+                    { queueStatus: 'Checked-In' },
+                    { queueStatus: 'Checked In' }
+                ],
+                date: { gte: today, lte: endOfDay }
+            }
         })
     ]);
 
