@@ -636,14 +636,34 @@ export const getRevenueStats = async (clinicId: number, doctorId: number) => {
     };
 };
 
-export const getDoctorSchedule = async (userId: number, clinicId: number) => {
-    const staff = await prisma.clinicstaff.findFirst({
-        where: { userId, clinicId }
-    });
-    if (!staff) throw new AppError('Doctor staff record not found', 404);
+export const getDoctorSchedule = async (userId: number, clinicId?: number) => {
+    let targetClinicId = clinicId;
+    let staff = null;
+
+    if (targetClinicId) {
+        staff = await prisma.clinicstaff.findFirst({
+            where: { userId, clinicId: targetClinicId }
+        });
+    }
+
+    if (!staff) {
+        staff = await prisma.clinicstaff.findFirst({
+            where: { userId }
+        });
+        if (staff?.clinicId) {
+            targetClinicId = staff.clinicId;
+        }
+    }
+
+    if (!targetClinicId) {
+        const firstClinic = await prisma.clinic.findFirst();
+        targetClinicId = firstClinic?.id || 1;
+    }
+
+    const docId = staff?.id || userId;
 
     const clinic = await prisma.clinic.findUnique({
-        where: { id: clinicId },
+        where: { id: targetClinicId },
         select: { bookingConfig: true }
     });
 
@@ -656,10 +676,10 @@ export const getDoctorSchedule = async (userId: number, clinicId: number) => {
     const defaultDuration = config.slotDuration ?? 30;
 
     const da = config.doctorAvailability || {};
-    const docConfig = da[String(staff.id)] || da[staff.id] || {};
+    const docConfig = da[String(docId)] || da[docId] || {};
 
     return {
-        doctorId: staff.id,
+        doctorId: docId,
         offDays: docConfig.offDays ?? defaultOffDays,
         timeSlots: docConfig.timeSlots?.length ? docConfig.timeSlots : defaultSlots,
         slotDuration: docConfig.slotDuration ?? defaultDuration,
@@ -668,14 +688,34 @@ export const getDoctorSchedule = async (userId: number, clinicId: number) => {
     };
 };
 
-export const updateDoctorSchedule = async (userId: number, clinicId: number, data: any) => {
-    const staff = await prisma.clinicstaff.findFirst({
-        where: { userId, clinicId }
-    });
-    if (!staff) throw new AppError('Doctor staff record not found', 404);
+export const updateDoctorSchedule = async (userId: number, clinicId?: number, data?: any) => {
+    let targetClinicId = clinicId;
+    let staff = null;
+
+    if (targetClinicId) {
+        staff = await prisma.clinicstaff.findFirst({
+            where: { userId, clinicId: targetClinicId }
+        });
+    }
+
+    if (!staff) {
+        staff = await prisma.clinicstaff.findFirst({
+            where: { userId }
+        });
+        if (staff?.clinicId) {
+            targetClinicId = staff.clinicId;
+        }
+    }
+
+    if (!targetClinicId) {
+        const firstClinic = await prisma.clinic.findFirst();
+        targetClinicId = firstClinic?.id || 1;
+    }
+
+    const docId = staff?.id || userId;
 
     const clinic = await prisma.clinic.findUnique({
-        where: { id: clinicId },
+        where: { id: targetClinicId },
         select: { bookingConfig: true }
     });
 
@@ -684,20 +724,20 @@ export const updateDoctorSchedule = async (userId: number, clinicId: number, dat
         config.doctorAvailability = {};
     }
 
-    config.doctorAvailability[String(staff.id)] = {
-        offDays: Array.isArray(data.offDays) ? data.offDays : [0, 6],
-        timeSlots: Array.isArray(data.timeSlots) ? data.timeSlots : [],
-        slotDuration: Number(data.slotDuration) || 30,
-        startTime: data.startTime || '09:00',
-        endTime: data.endTime || '17:00'
+    config.doctorAvailability[String(docId)] = {
+        offDays: Array.isArray(data?.offDays) ? data.offDays : [0, 6],
+        timeSlots: Array.isArray(data?.timeSlots) ? data.timeSlots : [],
+        slotDuration: Number(data?.slotDuration) || 30,
+        startTime: data?.startTime || '09:00',
+        endTime: data?.endTime || '17:00'
     };
 
     await prisma.clinic.update({
-        where: { id: clinicId },
+        where: { id: targetClinicId },
         data: {
             bookingConfig: JSON.stringify(config)
         }
     });
 
-    return config.doctorAvailability[String(staff.id)];
+    return config.doctorAvailability[String(docId)];
 };
