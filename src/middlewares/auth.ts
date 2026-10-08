@@ -60,6 +60,9 @@ export const protect = async (req: AuthRequest, res: Response, next: NextFunctio
 
 export const restrictTo = (...roles: string[]) => {
     return (req: AuthRequest, res: Response, next: NextFunction) => {
+        if (req.user?.role === 'SUPER_ADMIN') {
+            return next();
+        }
         if (!req.user || !roles.includes(req.user.role || '')) {
             console.log(`[403 ERROR] Denied: User ${req.user?.email} | Role: ${req.user?.role} | Expected: ${roles.join(',')}`);
             return next(new AppError('You do not have permission to perform this action', 403));

@@ -7,17 +7,17 @@ const router = Router();
 // Base protection
 router.use(protect, ensureClinicContext);
 
-// Templates (Admin Only)
-router.get('/templates', restrictTo('ADMIN', 'DOCTOR', 'RECEPTIONIST'), formController.getTemplates); // Doctors/Receptionists can view options
-router.get('/templates/:id', restrictTo('ADMIN', 'DOCTOR', 'RECEPTIONIST'), formController.getTemplateById);
-router.post('/templates', restrictTo('ADMIN'), formController.createTemplate);
-router.patch('/templates/:id', restrictTo('ADMIN'), formController.updateTemplate);
-router.delete('/templates/:id', restrictTo('ADMIN'), formController.deleteTemplate);
+// Templates
+router.get('/templates', restrictTo('ADMIN', 'DOCTOR', 'RECEPTIONIST', 'NURSE', 'STAFF', 'SUPER_ADMIN'), formController.getTemplates);
+router.get('/templates/:id', restrictTo('ADMIN', 'DOCTOR', 'RECEPTIONIST', 'NURSE', 'STAFF', 'SUPER_ADMIN'), formController.getTemplateById);
+router.post('/templates', restrictTo('ADMIN', 'SUPER_ADMIN'), formController.createTemplate);
+router.patch('/templates/:id', restrictTo('ADMIN', 'SUPER_ADMIN'), formController.updateTemplate);
+router.delete('/templates/:id', restrictTo('ADMIN', 'SUPER_ADMIN'), formController.deleteTemplate);
 
-// Form Responses (Doctors)
-router.get('/responses', restrictTo('DOCTOR', 'ADMIN'), formController.getAllResponses);
-router.post('/responses', restrictTo('DOCTOR'), formController.submitResponse);
-router.get('/responses/:id', restrictTo('DOCTOR', 'ADMIN'), formController.getResponseById);
-router.get('/patient/:patientId/responses', restrictTo('DOCTOR', 'ADMIN'), formController.getPatientResponses);
+// Form Responses (Doctors / Staff / Admins)
+router.get('/responses', restrictTo('DOCTOR', 'ADMIN', 'NURSE', 'RECEPTIONIST', 'STAFF', 'SUPER_ADMIN'), formController.getAllResponses);
+router.post('/responses', restrictTo('DOCTOR', 'ADMIN', 'NURSE', 'SUPER_ADMIN'), formController.submitResponse);
+router.get('/responses/:id', restrictTo('DOCTOR', 'ADMIN', 'NURSE', 'RECEPTIONIST', 'STAFF', 'SUPER_ADMIN'), formController.getResponseById);
+router.get('/patient/:patientId/responses', restrictTo('DOCTOR', 'ADMIN', 'NURSE', 'RECEPTIONIST', 'STAFF', 'SUPER_ADMIN'), formController.getPatientResponses);
 
 export default router;

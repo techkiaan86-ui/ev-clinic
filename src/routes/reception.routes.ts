@@ -18,7 +18,9 @@ router.get('/patients/:patientId/appointments', receptionController.getPatientAp
 router.post('/appointments', restrictTo('RECEPTIONIST', 'ADMIN'), receptionController.createAppointment);
 
 router.patch('/appointments/:id/status', restrictTo('RECEPTIONIST', 'ADMIN'), receptionController.updateApptStatus);
+router.patch('/appointments/:id/reschedule', restrictTo('RECEPTIONIST', 'ADMIN'), receptionController.rescheduleAppointment);
 router.post('/appointments/:id/check-in', restrictTo('RECEPTIONIST', 'ADMIN'), receptionController.checkIn);
+router.post('/appointments/:id/whatsapp-reminder', restrictTo('RECEPTIONIST', 'ADMIN'), receptionController.sendWhatsAppReminder);
 
 router.patch('/patients/:id/password', restrictTo('RECEPTIONIST', 'ADMIN'), receptionController.resetPassword);
 

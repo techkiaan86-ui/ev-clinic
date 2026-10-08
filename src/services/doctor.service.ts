@@ -22,6 +22,59 @@ export const getDoctorQueue = async (clinicId: number, doctorId: number) => {
     });
 };
 
+export const resolveServicePrice = async (txOrPrisma: any, clinicId: number, type: string, testName: string, providedAmount?: any): Promise<number> => {
+    if (providedAmount !== undefined && providedAmount !== null && !isNaN(Number(providedAmount)) && Number(providedAmount) > 0) {
+        return Number(providedAmount);
+    }
+    // 1. Look up in clinic_service table
+    try {
+        const cs = await txOrPrisma.clinic_service.findFirst({
+            where: {
+                clinicId,
+                type: type.toUpperCase(),
+                name: { equals: testName }
+            }
+        });
+        if (cs && cs.price && Number(cs.price) > 0) {
+            return Number(cs.price);
+        }
+    } catch (e) {
+        console.error('Error looking up clinic_service price:', e);
+    }
+
+    // 2. Standard baseline tariff fallbacks for popular tests
+    const normalized = (testName || '').toLowerCase();
+    if (type.toUpperCase() === 'LAB') {
+        if (normalized.includes('cbc') || normalized.includes('hemogram')) return 25;
+        if (normalized.includes('hb') || normalized.includes('hemoglobin')) return 15;
+        if (normalized.includes('esr')) return 10;
+        if (normalized.includes('sugar') || normalized.includes('glucose') || normalized.includes('fbs') || normalized.includes('rbs') || normalized.includes('ppbs')) return 12;
+        if (normalized.includes('hba1c')) return 30;
+        if (normalized.includes('lft') || normalized.includes('liver')) return 40;
+        if (normalized.includes('kft') || normalized.includes('rft') || normalized.includes('kidney') || normalized.includes('renal')) return 35;
+        if (normalized.includes('lipid') || normalized.includes('cholesterol')) return 35;
+        if (normalized.includes('thyroid') || normalized.includes('tsh') || normalized.includes('t3')) return 35;
+        if (normalized.includes('urine') || normalized.includes('urinalysis')) return 15;
+        if (normalized.includes('crp')) return 20;
+        if (normalized.includes('dengue') || normalized.includes('malaria') || normalized.includes('widal') || normalized.includes('typhoid')) return 25;
+        if (normalized.includes('vitamin d') || normalized.includes('d3')) return 45;
+        if (normalized.includes('vitamin b12') || normalized.includes('b12')) return 40;
+        if (normalized.includes('calcium') || normalized.includes('electrolyte')) return 25;
+        return 20; // Default lab test baseline
+    } else if (type.toUpperCase() === 'RADIOLOGY') {
+        if (normalized.includes('x-ray') || normalized.includes('xray')) return 45;
+        if (normalized.includes('ultrasound') || normalized.includes('usg') || normalized.includes('sonography')) return 65;
+        if (normalized.includes('ct') || normalized.includes('hrct') || normalized.includes('computed')) return 130;
+        if (normalized.includes('mri')) return 220;
+        if (normalized.includes('ecg') || normalized.includes('ekg')) return 25;
+        if (normalized.includes('echo')) return 85;
+        if (normalized.includes('tmt')) return 75;
+        if (normalized.includes('dexa')) return 90;
+        return 50; // Default radiology baseline
+    }
+    return 0;
+};
+
 export const saveCompleteEMR = async (clinicId: number, doctorId: number, payload: any) => {
     const { appointmentId, patientId, assessmentData, prescriptions = [], labRequests = [], radiologyRequests = [], billingAmount } = payload;
 
@@ -76,6 +129,7 @@ export const saveCompleteEMR = async (clinicId: number, doctorId: number, payloa
 
         // 3. Save Lab Requests
         for (const lab of labRequests) {
+            const finalAmount = await resolveServicePrice(tx, clinicId, 'LAB', lab.testName, lab.amount);
             const order = await tx.service_order.create({
                 data: {
                     clinicId,
@@ -83,7 +137,7 @@ export const saveCompleteEMR = async (clinicId: number, doctorId: number, payloa
                     doctorId,
                     type: 'LAB',
                     testName: lab.testName,
-                    amount: lab.amount ? Number(lab.amount) : 0,
+                    amount: finalAmount,
                     paymentStatus: 'Pending',
                     testStatus: 'Pending'
                 }
@@ -106,6 +160,7 @@ export const saveCompleteEMR = async (clinicId: number, doctorId: number, payloa
 
         // 4. Save Radiology Requests
         for (const rad of radiologyRequests) {
+            const finalAmount = await resolveServicePrice(tx, clinicId, 'RADIOLOGY', rad.testName, rad.amount);
             const order = await tx.service_order.create({
                 data: {
                     clinicId,
@@ -113,7 +168,7 @@ export const saveCompleteEMR = async (clinicId: number, doctorId: number, payloa
                     doctorId,
                     type: 'RADIOLOGY',
                     testName: rad.testName,
-                    amount: rad.amount ? Number(rad.amount) : 0,
+                    amount: finalAmount,
                     paymentStatus: 'Pending',
                     testStatus: 'Pending'
                 }
@@ -452,13 +507,14 @@ export const getDoctorOrders = async (clinicId: number, doctorId: number) => {
             details: o.testName,
             status: o.testStatus || 'Pending',
             priority: o.paymentStatus, // Using paymentStatus which often reflects priority in this DB or use a specific field if available
+            amount: Number(o.amount || 0),
             result: parsedResult
         };
     });
 };
 
 export const createOrder = async (clinicId: number, doctorId: number, data: any) => {
-    const { patientId, type, items, priority, notes, date } = data;
+    const { patientId, type, items, priority, notes, date, amount } = data;
 
     // Normalize type
     let orderType = 'LAB';
@@ -467,6 +523,7 @@ export const createOrder = async (clinicId: number, doctorId: number, data: any)
 
     let testName = typeof items === 'string' ? items : '';
     let resultPayload: any = { priority, notes, date };
+    let finalAmount = 0;
 
     if (orderType === 'PHARMACY' && Array.isArray(items) && items.length > 0) {
         const prescriptionItems = items.map((i: any) => ({
@@ -477,7 +534,13 @@ export const createOrder = async (clinicId: number, doctorId: number, data: any)
         }));
         testName = prescriptionItems.map((i: any) => `${i.medicineName} x${i.quantity}`).join(', ');
         resultPayload.items = prescriptionItems;
+        finalAmount = prescriptionItems.reduce((sum: number, it: any) => sum + (it.unitPrice * it.quantity), 0);
+        if (amount && Number(amount) > 0) finalAmount = Number(amount);
+    } else {
+        finalAmount = await resolveServicePrice(prisma, clinicId, orderType, testName, amount);
     }
+
+    resultPayload.amount = finalAmount;
 
     const order = await prisma.service_order.create({
         data: {
@@ -488,6 +551,7 @@ export const createOrder = async (clinicId: number, doctorId: number, data: any)
             testName: testName || (typeof items === 'string' ? items : 'Prescription'),
             testStatus: 'Pending',
             paymentStatus: 'Pending',
+            amount: finalAmount,
             result: JSON.stringify(resultPayload)
         }
     });
@@ -501,7 +565,7 @@ export const createOrder = async (clinicId: number, doctorId: number, data: any)
         data: {
             clinicId,
             department: dept,
-            message: JSON.stringify({ patientId, orderId: order.id, type: orderType, items, priority, notes })
+            message: JSON.stringify({ patientId, orderId: order.id, type: orderType, items, priority, notes, amount: finalAmount })
         }
     });
 
@@ -570,4 +634,70 @@ export const getRevenueStats = async (clinicId: number, doctorId: number) => {
         }))._sum.totalAmount || 0,
         chartData
     };
+};
+
+export const getDoctorSchedule = async (userId: number, clinicId: number) => {
+    const staff = await prisma.clinicstaff.findFirst({
+        where: { userId, clinicId }
+    });
+    if (!staff) throw new AppError('Doctor staff record not found', 404);
+
+    const clinic = await prisma.clinic.findUnique({
+        where: { id: clinicId },
+        select: { bookingConfig: true }
+    });
+
+    const config = clinic?.bookingConfig ? (typeof clinic.bookingConfig === 'string' ? JSON.parse(clinic.bookingConfig) : clinic.bookingConfig) : {};
+    const defaultOffDays = config.offDays ?? [0, 6];
+    const defaultSlots = config.timeSlots ?? [
+        '09:00 AM', '09:30 AM', '10:00 AM', '10:30 AM', '11:00 AM', '11:30 AM',
+        '01:00 PM', '01:30 PM', '02:00 PM', '02:30 PM', '03:00 PM', '03:30 PM', '04:00 PM', '04:30 PM'
+    ];
+    const defaultDuration = config.slotDuration ?? 30;
+
+    const da = config.doctorAvailability || {};
+    const docConfig = da[String(staff.id)] || da[staff.id] || {};
+
+    return {
+        doctorId: staff.id,
+        offDays: docConfig.offDays ?? defaultOffDays,
+        timeSlots: docConfig.timeSlots?.length ? docConfig.timeSlots : defaultSlots,
+        slotDuration: docConfig.slotDuration ?? defaultDuration,
+        startTime: docConfig.startTime || config.startTime || '09:00',
+        endTime: docConfig.endTime || config.endTime || '17:00'
+    };
+};
+
+export const updateDoctorSchedule = async (userId: number, clinicId: number, data: any) => {
+    const staff = await prisma.clinicstaff.findFirst({
+        where: { userId, clinicId }
+    });
+    if (!staff) throw new AppError('Doctor staff record not found', 404);
+
+    const clinic = await prisma.clinic.findUnique({
+        where: { id: clinicId },
+        select: { bookingConfig: true }
+    });
+
+    const config = clinic?.bookingConfig ? (typeof clinic.bookingConfig === 'string' ? JSON.parse(clinic.bookingConfig) : clinic.bookingConfig) : {};
+    if (!config.doctorAvailability) {
+        config.doctorAvailability = {};
+    }
+
+    config.doctorAvailability[String(staff.id)] = {
+        offDays: Array.isArray(data.offDays) ? data.offDays : [0, 6],
+        timeSlots: Array.isArray(data.timeSlots) ? data.timeSlots : [],
+        slotDuration: Number(data.slotDuration) || 30,
+        startTime: data.startTime || '09:00',
+        endTime: data.endTime || '17:00'
+    };
+
+    await prisma.clinic.update({
+        where: { id: clinicId },
+        data: {
+            bookingConfig: JSON.stringify(config)
+        }
+    });
+
+    return config.doctorAvailability[String(staff.id)];
 };

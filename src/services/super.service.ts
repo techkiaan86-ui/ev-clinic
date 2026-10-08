@@ -150,7 +150,8 @@ export const getClinics = async () => {
     });
 
     return clinics.map(clinic => {
-        const isExpired = clinic.subscriptionEnd ? new Date() > clinic.subscriptionEnd : false;
+        const now = new Date();
+        const isExpired = clinic.subscriptionEnd ? now > new Date(clinic.subscriptionEnd) : false;
 
         // Count roles specifically
         const doctors = clinic.clinicstaff.filter(s => s.role === 'DOCTOR').length;
@@ -166,11 +167,15 @@ export const getClinics = async () => {
         const totalInvoices = clinic._count.subscriptionInvoices;
 
         const daysRemaining = clinic.subscriptionEnd
-            ? Math.ceil((new Date(clinic.subscriptionEnd).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24))
+            ? Math.ceil((new Date(clinic.subscriptionEnd).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
             : 0;
+
+        const effectiveStatus = (isExpired || daysRemaining <= 0) ? 'inactive' : (clinic.status || 'active');
 
         return {
             ...clinic,
+            status: effectiveStatus,
+            isActive: effectiveStatus === 'active',
             modules: clinic.modules ? (typeof clinic.modules === 'string' ? JSON.parse(clinic.modules) : clinic.modules) : { pharmacy: true, radiology: true, laboratory: true, billing: true },
             isExpired,
             daysRemaining: daysRemaining > 0 ? daysRemaining : 0,
@@ -185,7 +190,7 @@ export const getClinics = async () => {
                 totalRevenue,
                 totalInvoices
             }
-        }
+        };
     });
 };
 
@@ -359,13 +364,14 @@ export const updateClinic = async (id: number, data: any) => {
         ...clinicData
     } = data;
 
-    // Sanitize logo to ensure it's a string path or removed if invalid
-    if (clinicData.logo && typeof clinicData.logo !== 'string') {
-        delete (clinicData as any).logo;
+    // Sanitize logo to ensure it's a string path or null
+    let logoValue: string | null | undefined = undefined;
+    if (clinicData.logo !== undefined) {
+        logoValue = typeof clinicData.logo === 'string' && clinicData.logo.trim() !== '' ? clinicData.logo : null;
     }
 
     // If password is provided and not empty, update the admin user's password
-    if (password && password.trim() !== '') {
+    if (password && typeof password === 'string' && password.trim() !== '') {
         // Find the admin user for this clinic
         const adminStaff = await prisma.clinicstaff.findFirst({
             where: {
@@ -378,7 +384,7 @@ export const updateClinic = async (id: number, data: any) => {
         });
 
         if (adminStaff) {
-            const hashedPassword = await bcrypt.hash(password, 12);
+            const hashedPassword = await bcrypt.hash(password.trim(), 12);
             await prisma.user.update({
                 where: { id: adminStaff.userId },
                 data: { password: hashedPassword }
@@ -386,21 +392,23 @@ export const updateClinic = async (id: number, data: any) => {
         }
     }
 
-    // Update userLimit if numberOfUsers is provided
-    if (numberOfUsers !== undefined && numberOfUsers !== '') {
-        clinicData.userLimit = Number(numberOfUsers);
-    }
-
     // Handle subscription updates if provided
+    let calculatedEnd: Date | undefined = undefined;
+    let calculatedStart: Date | undefined = undefined;
+    let calculatedPlan: string | undefined = clinicData.subscriptionPlan ? String(clinicData.subscriptionPlan) : undefined;
+    let isPlanActive: boolean | undefined = undefined;
+    let planStatus: string | undefined = undefined;
+
     if (subscriptionDuration !== undefined || manualDays !== undefined || trialDays !== undefined || clinicData.subscriptionPlan) {
-        // Fetch current clinic to get existing subscription plan if not provided
         const currentClinic = await prisma.clinic.findUnique({
             where: { id },
             select: { subscriptionPlan: true, subscriptionStart: true, subscriptionEnd: true }
         });
 
         const plan = clinicData.subscriptionPlan || currentClinic?.subscriptionPlan || 'Monthly';
+        calculatedPlan = plan;
         const start = clinicData.subscriptionPlan ? new Date() : (currentClinic?.subscriptionStart || new Date());
+        calculatedStart = start;
         let end = new Date();
         const duration = Number(subscriptionDuration) || 1;
         const days = Number(manualDays) || 30;
@@ -410,28 +418,61 @@ export const updateClinic = async (id: number, data: any) => {
             end = new Date();
             end.setDate(end.getDate() + tDays);
             if (tDays > 0) {
-                clinicData.isActive = true;
-                clinicData.status = 'active';
+                isPlanActive = true;
+                planStatus = 'active';
             }
         } else if (plan === 'Manual') {
             end = new Date();
             end.setDate(end.getDate() + Number(days));
+            if (days > 0) {
+                isPlanActive = true;
+                planStatus = 'active';
+            }
         } else {
             end = new Date(start);
             end.setMonth(end.getMonth() + Number(duration));
+            if (duration > 0) {
+                isPlanActive = true;
+                planStatus = 'active';
+            }
         }
 
-        clinicData.subscriptionEnd = end;
-        clinicData.subscriptionPlan = plan;
-        if (clinicData.subscriptionPlan && !currentClinic?.subscriptionStart) {
-            clinicData.subscriptionStart = start;
-        }
+        calculatedEnd = end;
     }
 
-    // Update clinic with only valid clinic fields
+    // Construct strictly whitelisted Prisma update object
+    const sanitizedUpdate: any = {};
+    if (clinicData.name !== undefined) sanitizedUpdate.name = String(clinicData.name);
+    if (clinicData.subdomain !== undefined) sanitizedUpdate.subdomain = String(clinicData.subdomain);
+    if (clinicData.location !== undefined) sanitizedUpdate.location = String(clinicData.location);
+    if (clinicData.contact !== undefined) sanitizedUpdate.contact = String(clinicData.contact);
+    if (clinicData.email !== undefined) sanitizedUpdate.email = String(clinicData.email);
+    if (logoValue !== undefined) sanitizedUpdate.logo = logoValue;
+    if (clinicData.brandingColor !== undefined) sanitizedUpdate.brandingColor = String(clinicData.brandingColor);
+    if (clinicData.status !== undefined) sanitizedUpdate.status = String(clinicData.status);
+    if (planStatus !== undefined) sanitizedUpdate.status = planStatus;
+    if (isPlanActive !== undefined) sanitizedUpdate.isActive = isPlanActive;
+    else if (clinicData.isActive !== undefined) sanitizedUpdate.isActive = Boolean(clinicData.isActive);
+    if (clinicData.currency !== undefined) sanitizedUpdate.currency = String(clinicData.currency);
+    if (numberOfUsers !== undefined && numberOfUsers !== '') sanitizedUpdate.userLimit = Number(numberOfUsers);
+    else if (clinicData.userLimit !== undefined) sanitizedUpdate.userLimit = Number(clinicData.userLimit);
+    if (calculatedPlan !== undefined) sanitizedUpdate.subscriptionPlan = calculatedPlan;
+    if (calculatedEnd !== undefined) sanitizedUpdate.subscriptionEnd = calculatedEnd;
+    if (calculatedStart !== undefined) sanitizedUpdate.subscriptionStart = calculatedStart;
+    if (clinicData.modules !== undefined) {
+        sanitizedUpdate.modules = typeof clinicData.modules === 'string' ? clinicData.modules : JSON.stringify(clinicData.modules);
+    }
+    if (clinicData.documentTypes !== undefined) {
+        sanitizedUpdate.documentTypes = typeof clinicData.documentTypes === 'string' ? clinicData.documentTypes : JSON.stringify(clinicData.documentTypes);
+    }
+    if (clinicData.bookingConfig !== undefined) {
+        sanitizedUpdate.bookingConfig = typeof clinicData.bookingConfig === 'string' ? clinicData.bookingConfig : JSON.stringify(clinicData.bookingConfig);
+    }
+
+    // Update clinic with only valid, sanitized fields
     const clinic = await prisma.clinic.update({
         where: { id },
-        data: clinicData
+        data: sanitizedUpdate
     });
 
     await prisma.auditlog.create({
@@ -439,7 +480,7 @@ export const updateClinic = async (id: number, data: any) => {
             action: 'Clinic Updated',
             performedBy: 'SUPER_ADMIN',
             clinicId: id,
-            details: JSON.stringify({ clinicId: id, updates: Object.keys(clinicData) })
+            details: JSON.stringify({ clinicId: id, updates: Object.keys(sanitizedUpdate) })
         }
     });
 

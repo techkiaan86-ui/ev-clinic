@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../utils/AppError.js';
-import { isSlotConfirmed, isDoctorSlotBooked } from '../utils/slotLock.js';
+import { isSlotConfirmed, isDoctorSlotBooked, isDoctorOnDayOff } from '../utils/slotLock.js';
+import { sendAppointmentBookingConfirmation, sendAppointmentReminder, generateWhatsAppWebUrl } from './whatsapp.service.js';
 
 const getNextToken = async (clinicId: number) => {
     const today = new Date();
@@ -409,6 +410,14 @@ export const createBooking = async (clinicId: number, data: any) => {
     const { patientId, doctorId, date, time, fees, notes, service, status } = data;
     const finalStatus = status || 'Pending';
 
+    // Prevent booking on Doctor's scheduled Day Off
+    if (doctorId && date) {
+        const offDayCheck = await isDoctorOnDayOff(prisma, clinicId, Number(doctorId), date);
+        if (offDayCheck.isOff) {
+            throw new AppError(offDayCheck.reason || 'The doctor is not scheduled on this day.', 400);
+        }
+    }
+
     // Prevent double booking for the same doctor at the same time and date
     if (doctorId && time && date) {
         const isBooked = await isDoctorSlotBooked(prisma, clinicId, Number(doctorId), date, time);
@@ -444,7 +453,68 @@ export const createBooking = async (clinicId: number, data: any) => {
         include: { patient: true }
     });
 
+    // Send automated WhatsApp appointment confirmation
+    sendAppointmentBookingConfirmation(appointment.id).catch(err => console.error('[WHATSAPP BOOKING ERROR]:', err));
+
     return appointment;
+};
+
+export const rescheduleBooking = async (clinicId: number, appointmentId: number, data: { date: string; time: string; doctorId?: number }) => {
+    const { date, time, doctorId } = data;
+
+    const appointment = await prisma.appointment.findUnique({
+        where: { id: appointmentId }
+    });
+
+    if (!appointment || appointment.clinicId !== clinicId) {
+        throw new AppError('Appointment not found', 404);
+    }
+
+    const targetDoctorId = doctorId ? Number(doctorId) : appointment.doctorId;
+
+    // Prevent rescheduling on doctor's day off
+    if (targetDoctorId && date) {
+        const offDayCheck = await isDoctorOnDayOff(prisma, clinicId, targetDoctorId, date);
+        if (offDayCheck.isOff) {
+            throw new AppError(offDayCheck.reason || 'The doctor is not scheduled on this day (Day Off).', 400);
+        }
+    }
+
+    // Prevent double booking for the same doctor at the same time and date (excluding current appointment)
+    if (targetDoctorId && time && date) {
+        const isBooked = await isDoctorSlotBooked(prisma, clinicId, targetDoctorId, date, time, appointmentId);
+        if (isBooked) {
+            throw new AppError(`The selected time slot (${time}) is already booked for this doctor. Please choose a different time slot.`, 400);
+        }
+    }
+
+    const updated = await prisma.appointment.update({
+        where: { id: appointmentId },
+        data: {
+            date: date ? new Date(date) : appointment.date,
+            time: time || appointment.time,
+            doctorId: targetDoctorId,
+            status: appointment.status === 'Cancelled' ? 'Pending' : appointment.status
+        },
+        include: { patient: true }
+    });
+
+    // Notify patient of reschedule via WhatsApp
+    sendAppointmentReminder(updated.id).catch(err => console.error('[WHATSAPP RESCHEDULE ERROR]:', err));
+
+    return updated;
+};
+
+export const triggerWhatsAppReminder = async (clinicId: number, appointmentId: number) => {
+    const appt = await prisma.appointment.findFirst({
+        where: { id: appointmentId, clinicId }
+    });
+    if (!appt) throw new AppError('Appointment not found', 404);
+
+    const result = await sendAppointmentReminder(appointmentId);
+    if (!result) throw new AppError('Unable to send WhatsApp reminder (missing phone number or appointment info)', 400);
+
+    return result;
 };
 
 export const checkInPatient = async (clinicId: number, appointmentId: number) => {

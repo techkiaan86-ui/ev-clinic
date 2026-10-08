@@ -30,8 +30,10 @@ import menuRoutes from './routes/menu.routes.js';
 import publicRoutes from './routes/public.routes.js';
 import dashboardRoutes from './routes/dashboard.routes.js';
 import medicalReportRoutes from './routes/medicalReport.routes.js';
+import insuranceRoutes from './routes/insurance.routes.js';
 
 import { startTime } from './utils/system.js';
+import { startReminderScheduler } from './utils/reminder.scheduler.js';
 
 import { prisma } from './lib/prisma.js';
 
@@ -150,6 +152,8 @@ app.use('/api/menu', menuRoutes);
 app.use('/api/public', publicRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/medical-reports', medicalReportRoutes);
+app.use('/api/insurance', insuranceRoutes);
+
 
 /* -------------------- HEALTH CHECK -------------------- */
 
@@ -190,6 +194,9 @@ Started: ${startTime}
 DB URL : ${process.env.DATABASE_URL ? 'PRESENT' : 'MISSING!'}
 --------------------------------
 `);
+
+  // Start automated background WhatsApp appointment reminder scheduler
+  startReminderScheduler(30);
 });
 
 /* -------------------- GRACEFUL SHUTDOWN -------------------- */

@@ -108,20 +108,62 @@ export const createRegistration = asyncHandler(async (req: Request, res: Respons
         });
     }
 
-    // Admin Flow (Approval Needed)
+    // Check plan
+    let planName = 'Free Trial (100 Free Credits)';
+    if (planId) {
+        const foundPlan = await prisma.subscription_plan.findUnique({ where: { id: Number(planId) } });
+        if (foundPlan) planName = foundPlan.name;
+    }
+
+    // Auto-create Clinic and Admin user immediately
+    const clinicName = `${firstName}'s Clinic`;
+    const clinicData = {
+        name: clinicName,
+        location: address || 'Lebanon',
+        email,
+        contact: '0000000000',
+        password,
+        subscriptionDuration: 12,
+        subscriptionPlan: planName,
+        numberOfUsers: 10,
+        subscriptionAmount: 0,
+        gstPercent: 0
+    };
+
+    const clinic = await superService.createClinic(clinicData);
+
+    // Enable all modules for the new clinic
+    const updatedModules = {
+        pharmacy: true,
+        radiology: true,
+        laboratory: true,
+        billing: true,
+        reports: true,
+        website_builder: true
+    };
+
+    await prisma.clinic.update({
+        where: { id: clinic.id },
+        data: { modules: JSON.stringify(updatedModules) }
+    });
+
     const reqData = await prisma.registration_request.create({
         data: {
             firstName,
             lastName,
             email,
-            password, // Approved flow typically uses registration password during clinic create
+            password,
             address,
             planId: planId ? Number(planId) : null,
-            status: 'PENDING'
+            status: 'APPROVED'
         }
     });
 
-    res.status(201).json({ success: true, message: 'Registration submitted successfully. Waiting for Admin approval.', data: reqData });
+    res.status(201).json({
+        success: true,
+        message: 'Clinic account created successfully! You can now login immediately.',
+        data: { clinic, registration: reqData }
+    });
 });
 
 export const getRegistrations = asyncHandler(async (req: Request, res: Response) => {

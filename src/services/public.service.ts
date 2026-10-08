@@ -1,7 +1,8 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { AppError } from '../utils/AppError.js';
-import { isSlotConfirmed, normalizeTime } from '../utils/slotLock.js';
+import { isSlotConfirmed, isDoctorSlotBooked, isDoctorOnDayOff, normalizeTime } from '../utils/slotLock.js';
+import { sendAppointmentBookingConfirmation } from './whatsapp.service.js';
 
 const prisma = new PrismaClient();
 
@@ -139,10 +140,18 @@ export const createPublicBooking = async (data: any) => {
         });
     }
 
-    // Check if slot is already confirmed and locked
-    const alreadyLocked = await isSlotConfirmed(prisma, Number(clinicId), date, time);
-    if (alreadyLocked) {
-        throw new AppError(`The selected time slot (${time}) is already confirmed and locked for another patient. Please choose a different time slot.`, 400);
+    // Prevent booking on Doctor's scheduled Day Off
+    if (doctorId && date) {
+        const offDayCheck = await isDoctorOnDayOff(prisma, Number(clinicId), Number(doctorId), date);
+        if (offDayCheck.isOff) {
+            throw new AppError(offDayCheck.reason || 'The doctor is not scheduled on this day.', 400);
+        }
+    }
+
+    // Check if slot is already booked for this doctor
+    const alreadyBooked = await isDoctorSlotBooked(prisma, Number(clinicId), Number(doctorId), date, time);
+    if (alreadyBooked) {
+        throw new AppError(`The selected time slot (${time}) is already booked for this doctor. Please choose a different time slot.`, 400);
     }
 
     // 3. Create Appointment
@@ -160,8 +169,8 @@ export const createPublicBooking = async (data: any) => {
         }
     });
 
-    // 4. Audit Log
-    await prisma.auditlog.create({
+    // 4. Audit Log (non-blocking)
+    prisma.auditlog.create({
         data: {
             action: 'Public Appointment Booked',
             performedBy: 'PATIENT',
@@ -169,17 +178,22 @@ export const createPublicBooking = async (data: any) => {
             clinicId,
             details: JSON.stringify({ appointmentId: appointment.id })
         }
-    });
+    }).catch(err => console.error('[AUDIT ERROR]:', err));
+
+    // 5. Send automated WhatsApp confirmation
+    sendAppointmentBookingConfirmation(appointment.id).catch(err => console.error('[WHATSAPP BOOKING ERROR]:', err));
 
     return appointment;
 };
 
 export const getLiveTokens = async (subdomain: string) => {
+    const isNum = !isNaN(Number(subdomain));
     const clinic = await prisma.clinic.findFirst({
         where: {
             OR: [
                 { subdomain: subdomain },
-                { id: !isNaN(Number(subdomain)) ? Number(subdomain) : -1 }
+                { id: isNum ? Number(subdomain) : -1 },
+                { name: { contains: subdomain } }
             ]
         },
         select: {
@@ -192,30 +206,47 @@ export const getLiveTokens = async (subdomain: string) => {
     });
     if (!clinic) throw new AppError('Clinic not found', 404);
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
+    const now = new Date();
+    // Broad window for timezone safety (yesterday to tomorrow)
+    const windowStart = new Date(now);
+    windowStart.setDate(windowStart.getDate() - 1);
+    windowStart.setHours(0, 0, 0, 0);
+
+    const windowEnd = new Date(now);
+    windowEnd.setDate(windowEnd.getDate() + 1);
+    windowEnd.setHours(23, 59, 59, 999);
+
+    const activeKeywords = [
+        'checked in', 'checked-in', 'waiting', 'in consultation',
+        'in-consultation', 'in progress', 'in-progress', 'pending', 'confirmed'
+    ];
 
     const appointments = await prisma.appointment.findMany({
         where: {
             clinicId: clinic.id,
-            status: { notIn: ['Cancelled', 'CANCELLED'] },
+            status: { notIn: ['Cancelled', 'CANCELLED', 'cancelled', 'Rejected', 'REJECTED', 'rejected'] },
             OR: [
                 {
                     date: {
-                        gte: todayStart,
-                        lte: todayEnd
+                        gte: windowStart,
+                        lte: windowEnd
                     }
                 },
                 {
                     createdAt: {
-                        gte: todayStart,
-                        lte: todayEnd
+                        gte: windowStart,
+                        lte: windowEnd
                     }
                 },
                 {
-                    queueStatus: { in: ['Checked In', 'Checked-In', 'Waiting', 'In Consultation', 'In-Consultation', 'Pending', 'Pending-Payment'] }
+                    queueStatus: {
+                        in: ['Checked In', 'Checked-In', 'checked in', 'checked-in', 'Waiting', 'waiting', 'In Consultation', 'In-Consultation', 'in-consultation', 'Pending', 'pending', 'Confirmed', 'confirmed']
+                    }
+                },
+                {
+                    status: {
+                        in: ['Checked In', 'Checked-In', 'checked in', 'checked-in', 'Waiting', 'waiting', 'In Consultation', 'In-Consultation', 'in-consultation', 'Pending', 'pending', 'Confirmed', 'confirmed']
+                    }
                 }
             ]
         },
@@ -233,20 +264,30 @@ export const getLiveTokens = async (subdomain: string) => {
         ]
     });
 
-    const queue = appointments.map((a, idx) => {
-        let doctorName = 'General';
-        if (a.doctor?.user?.name) {
-            doctorName = `Dr. ${a.doctor.user.name}`;
-        }
-        return {
-            id: a.id,
-            tokenNumber: a.tokenNumber !== null && a.tokenNumber !== undefined ? a.tokenNumber : (idx + 1),
-            status: a.queueStatus || a.status || 'Waiting',
-            patientName: a.patient?.name || 'Patient',
-            doctorName,
-            time: a.time
-        };
-    });
+    const queue = appointments
+        .filter(a => {
+            const rawStatus = (a.status || '').toLowerCase().replace(/_/g, '-').trim();
+            const rawQueue = (a.queueStatus || '').toLowerCase().replace(/_/g, '-').trim();
+
+            if (rawStatus === 'completed' || rawStatus === 'cancelled' || rawStatus === 'rejected') return false;
+            if (rawQueue === 'completed' || rawQueue === 'cancelled' || rawQueue === 'rejected') return false;
+
+            return activeKeywords.some(k => rawStatus.includes(k) || rawQueue.includes(k)) || Boolean(a.tokenNumber);
+        })
+        .map((a, idx) => {
+            let doctorName = 'General';
+            if (a.doctor?.user?.name) {
+                doctorName = `Dr. ${a.doctor.user.name}`;
+            }
+            return {
+                id: a.id,
+                tokenNumber: (a.tokenNumber !== null && a.tokenNumber !== undefined && a.tokenNumber > 0) ? a.tokenNumber : (idx + 1),
+                status: a.queueStatus || a.status || 'Waiting',
+                patientName: a.patient?.name || 'Patient',
+                doctorName,
+                time: a.time || ''
+            };
+        });
 
     return { clinic, queue };
 };

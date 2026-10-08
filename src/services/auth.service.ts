@@ -59,26 +59,31 @@ export const login = async (data: any, ip: string, device: string) => {
         throw new AppError('Incorrect email or password', 401);
     }
 
-    // Reset attempts on successful login
-    await prisma.user.update({
-        where: { id: user.id },
-        data: { failedLoginAttempts: 0, lockoutUntil: null }
-    });
-
-    // Bypass OTP for testing - Return token directly
-
-    // Attempt to fix potential invalid enum values for Super Admin or others
-    try {
-        await prisma.$executeRawUnsafe(`UPDATE clinicstaff SET role = 'RECEPTIONIST' WHERE role = '' OR role IS NULL`);
-    } catch (e) {
-        // Ignore raw query errors (e.g. if syntax differs)
+    // Reset attempts on successful login (only if needed)
+    if (user.failedLoginAttempts > 0 || user.lockoutUntil) {
+        prisma.user.update({
+            where: { id: user.id },
+            data: { failedLoginAttempts: 0, lockoutUntil: null }
+        }).catch(err => console.error('[AUTH] Failed to reset login attempts:', err));
     }
 
     let staffRecords: any[] = [];
     try {
         staffRecords = await prisma.clinicstaff.findMany({
             where: { userId: user.id },
-            include: { clinic: { select: { id: true, status: true } } }
+            include: {
+                clinic: {
+                    select: {
+                        id: true,
+                        name: true,
+                        location: true,
+                        status: true,
+                        isActive: true,
+                        modules: true,
+                        subscriptionEnd: true
+                    }
+                }
+            }
         });
     } catch (e: any) {
         console.error('Error fetching staff records:', e);
@@ -111,9 +116,16 @@ export const login = async (data: any, ip: string, device: string) => {
         }
 
         let targetClinicId: number | undefined = undefined;
+        let patientClinicPayload: any = undefined;
 
         if (activeClinics.length === 1) {
             targetClinicId = activeClinics[0].clinicId;
+            patientClinicPayload = {
+                id: activeClinics[0].clinic.id,
+                name: activeClinics[0].clinic.name,
+                location: activeClinics[0].clinic.location || '',
+                role: 'PATIENT'
+            };
         }
 
         const token = signToken({
@@ -122,8 +134,8 @@ export const login = async (data: any, ip: string, device: string) => {
             clinicId: targetClinicId
         });
 
-        // Audit Log
-        await prisma.auditlog.create({
+        // Audit Log (non-blocking)
+        prisma.auditlog.create({
             data: {
                 action: 'Patient Login',
                 performedBy: user.email,
@@ -133,7 +145,7 @@ export const login = async (data: any, ip: string, device: string) => {
                 device: device,
                 details: JSON.stringify({ clinicCount: activeClinics.length })
             }
-        });
+        }).catch(err => console.error('[AUTH] Patient audit log failed:', err));
 
         return {
             success: true,
@@ -152,6 +164,7 @@ export const login = async (data: any, ip: string, device: string) => {
                     patientId: p.id
                 }))
             },
+            clinic: patientClinicPayload,
             token
         };
     }
@@ -186,12 +199,26 @@ export const login = async (data: any, ip: string, device: string) => {
     // Determine the primary role for the token
     let tokenRole = user.role;
     let targetClinicId = undefined;
+    let singleClinicPayload: any = undefined;
 
     if (isSuperAdmin) {
         tokenRole = 'SUPER_ADMIN';
     } else if (staffRecords.length === 1) {
         tokenRole = staffRecords[0].role;
         targetClinicId = staffRecords[0].clinicId;
+        if (staffRecords[0].clinic) {
+            const c = staffRecords[0].clinic;
+            singleClinicPayload = {
+                id: c.id,
+                name: c.name,
+                location: c.location || '',
+                role: staffRecords[0].role || tokenRole,
+                modules: c.modules,
+                status: c.status,
+                isActive: c.isActive !== false,
+                subscriptionEnd: c.subscriptionEnd
+            };
+        }
     } else if (staffRecords.length > 1) {
         if (roles.includes('ADMIN')) tokenRole = 'ADMIN';
         else if (roles.includes('DOCTOR')) tokenRole = 'DOCTOR';
@@ -207,17 +234,18 @@ export const login = async (data: any, ip: string, device: string) => {
         clinicId: targetClinicId
     });
 
-    // Audit Log
-    await prisma.auditlog.create({
+    // Audit Log (non-blocking)
+    prisma.auditlog.create({
         data: {
             action: 'Direct Login (2FA Bypassed for Testing)',
             performedBy: user.email,
             userId: user.id,
+            clinicId: targetClinicId,
             ipAddress: ip,
             device: device,
             details: JSON.stringify({ message: 'User logged in directly via bypass' })
         }
-    });
+    }).catch(err => console.error('[AUTH] Audit log failed:', err));
 
     return {
         success: true,
@@ -230,6 +258,7 @@ export const login = async (data: any, ip: string, device: string) => {
             roles,
             clinics: staffRecords.map((r: any) => r.clinicId)
         },
+        clinic: singleClinicPayload,
         token
     };
 };

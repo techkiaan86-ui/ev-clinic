@@ -39,6 +39,11 @@ export const updateApptStatus = asyncHandler(async (req: AuthRequest, res: Respo
     res.status(200).json({ status: 'success', data: appt });
 });
 
+export const rescheduleAppointment = asyncHandler(async (req: AuthRequest, res: Response) => {
+    const appt = await receptionService.rescheduleBooking(req.clinicId!, Number(req.params.id), req.body);
+    res.status(200).json({ status: 'success', data: appt });
+});
+
 export const checkIn = asyncHandler(async (req: AuthRequest, res: Response) => {
     const appt = await receptionService.checkInPatient(req.clinicId!, Number(req.params.id));
     res.status(200).json({ status: 'success', data: appt });
@@ -57,4 +62,9 @@ export const getActivities = asyncHandler(async (req: AuthRequest, res: Response
 export const resetPassword = asyncHandler(async (req: AuthRequest, res: Response) => {
     await receptionService.resetPatientPassword(Number(req.params.id), req.body.password);
     res.status(200).json({ status: 'success', message: 'Password reset successfully' });
+});
+
+export const sendWhatsAppReminder = asyncHandler(async (req: AuthRequest, res: Response) => {
+    const result = await receptionService.triggerWhatsAppReminder(req.clinicId!, Number(req.params.id));
+    res.status(200).json({ status: 'success', data: result, message: 'WhatsApp reminder sent successfully' });
 });

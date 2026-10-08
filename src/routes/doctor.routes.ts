@@ -25,5 +25,7 @@ router.post('/orders', doctorController.createOrder);
 router.get('/orders', doctorController.getOrders);
 router.get('/prescription-inventory', doctorController.getPrescriptionInventory);
 router.get('/revenue', doctorController.getRevenue);
+router.get('/schedule', doctorController.getSchedule);
+router.put('/schedule', doctorController.updateSchedule);
 
 export default router;

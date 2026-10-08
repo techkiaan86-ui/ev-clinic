@@ -121,3 +121,13 @@ export const getRevenue = asyncHandler(async (req: AuthRequest, res: Response) =
     res.status(200).json({ status: 'success', data: revenue });
 });
 
+export const getSchedule = asyncHandler(async (req: AuthRequest, res: Response) => {
+    const schedule = await doctorService.getDoctorSchedule(req.user!.id, req.clinicId!);
+    res.status(200).json({ status: 'success', data: schedule });
+});
+
+export const updateSchedule = asyncHandler(async (req: AuthRequest, res: Response) => {
+    const schedule = await doctorService.updateDoctorSchedule(req.user!.id, req.clinicId!, req.body);
+    res.status(200).json({ status: 'success', message: 'Schedule updated successfully', data: schedule });
+});
+

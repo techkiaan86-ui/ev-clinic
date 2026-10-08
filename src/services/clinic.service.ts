@@ -65,12 +65,40 @@ export const getClinicContext = async (clinicId: number) => {
         modules,
         brandingColor: clinic.brandingColor,
         status: clinic.status,
-        documentTypes: clinic.documentTypes ? JSON.parse(clinic.documentTypes) : null
+        documentTypes: clinic.documentTypes ? JSON.parse(clinic.documentTypes) : null,
+        bookingConfig: clinic.bookingConfig ? (typeof clinic.bookingConfig === 'string' ? JSON.parse(clinic.bookingConfig) : clinic.bookingConfig) : null
     };
 };
 
 export const updateClinic = async (clinicId: number, data: any) => {
-    const { name, location, contact, email, documentTypes, brandingColor } = data;
+    const { name, location, contact, email, documentTypes, brandingColor, websiteConfig, bookingConfig } = data;
+
+    // Merge websiteConfig into bookingConfig if provided
+    let updatedBookingConfig: string | undefined = undefined;
+    if (websiteConfig || bookingConfig) {
+        const current = await prisma.clinic.findUnique({
+            where: { id: clinicId },
+            select: { bookingConfig: true }
+        });
+
+        let currentConfig: any = {};
+        if (current?.bookingConfig) {
+            try {
+                currentConfig = typeof current.bookingConfig === 'string' ? JSON.parse(current.bookingConfig) : current.bookingConfig;
+            } catch (e) {
+                currentConfig = {};
+            }
+        }
+
+        if (bookingConfig) {
+            currentConfig = { ...currentConfig, ...(typeof bookingConfig === 'string' ? JSON.parse(bookingConfig) : bookingConfig) };
+        }
+        if (websiteConfig) {
+            currentConfig.websiteConfig = websiteConfig;
+        }
+
+        updatedBookingConfig = JSON.stringify(currentConfig);
+    }
 
     const updated = await prisma.clinic.update({
         where: { id: clinicId },
@@ -80,7 +108,8 @@ export const updateClinic = async (clinicId: number, data: any) => {
             contact: contact || undefined,
             email: email || undefined,
             brandingColor: brandingColor || undefined,
-            documentTypes: documentTypes ? JSON.stringify(documentTypes) : undefined
+            documentTypes: documentTypes ? JSON.stringify(documentTypes) : undefined,
+            bookingConfig: updatedBookingConfig || undefined
         }
     });
 
@@ -95,7 +124,8 @@ export const updateClinic = async (clinicId: number, data: any) => {
 
     return {
         ...updated,
-        documentTypes: updated.documentTypes ? JSON.parse(updated.documentTypes) : null
+        documentTypes: updated.documentTypes ? JSON.parse(updated.documentTypes) : null,
+        bookingConfig: updated.bookingConfig ? JSON.parse(updated.bookingConfig) : null
     };
 };
 
@@ -138,11 +168,11 @@ export const getClinicStaff = async (clinicId: number) => {
             id: record.id,
             userId: record.userId,
             clinicId: record.clinicId,
-            name: (record.user as any).name,
-            email: (record.user as any).email,
-            phone: (record.user as any).phone,
-            status: (record.user as any).status,
-            joined: (record.user as any).joined ? (record.user as any).joined.toISOString().split('T')[0] : null,
+            name: (record.user as any)?.name || 'Staff Member',
+            email: (record.user as any)?.email || '',
+            phone: (record.user as any)?.phone || '',
+            status: (record.user as any)?.status || 'active',
+            joined: (record.user as any)?.joined ? (record.user as any).joined.toISOString().split('T')[0] : (record.createdAt ? record.createdAt.toISOString().split('T')[0] : null),
             role: record.role,
             roles: roles,
             department: record.department,
@@ -418,15 +448,84 @@ export const deleteClinicStaff = async (clinicId: number, staffId: number, userR
 };
 
 export const getFormTemplates = async (clinicId: number) => {
-    return await prisma.formtemplate.findMany({
+    let templates = await prisma.formtemplate.findMany({
         where: {
             OR: [
-                { clinicId: clinicId },
+                { clinicId: Number(clinicId) },
                 { clinicId: null }
             ]
         },
         orderBy: { name: 'asc' }
     });
+
+    const standardTemplates = [
+        {
+            name: 'General Medical Assessment Template',
+            specialty: 'General Practice',
+            status: 'published',
+            version: 1,
+            fields: JSON.stringify([
+                { id: 'chief_complaint', type: 'textarea', label: 'Chief Complaint', required: true, placeholder: "Describe patient's primary symptoms, complaints, and duration..." },
+                { id: 'history_present_illness', type: 'textarea', label: 'History of Present Illness (HPI)', required: false, placeholder: 'Onset, location, duration, character, aggravating and relieving factors...' },
+                { id: 'past_medical_history', type: 'textarea', label: 'Past Medical & Surgical History', required: false, placeholder: 'Chronic conditions, past surgeries, allergies, ongoing medications...' },
+                { id: 'physical_examination', type: 'textarea', label: 'Physical & Systemic Examination', required: false, placeholder: 'General appearance, systemic findings (Cardiovascular, Respiratory, Abdominal, CNS)...' },
+                { id: 'vital_signs_summary', type: 'text', label: 'Vital Signs Summary', required: false, placeholder: 'BP, Pulse, Temperature, SpO2, Respiratory Rate' },
+                { id: 'provisional_diagnosis', type: 'textarea', label: 'Provisional Clinical Diagnosis & Treatment Plan', required: false, placeholder: 'Clinical impressions, medications prescribed, follow-up plan...' }
+            ])
+        },
+        {
+            name: 'Dental Clinical Assessment & Tooth Chart',
+            specialty: 'Dentistry',
+            status: 'published',
+            version: 1,
+            fields: JSON.stringify([
+                { id: 'dental_complaint', type: 'textarea', label: 'Chief Dental Complaint', required: true, placeholder: 'Toothache, gum bleeding, sensitivity, dental trauma, swelling, broken restoration...' },
+                { id: 'teeth_involved', type: 'text', label: 'Tooth / Teeth Number(s) Involved', required: false, placeholder: 'e.g. Tooth #18, Upper Right Quadrant, Lower Anterior (1-32 FDI)...' },
+                { id: 'tooth_chart_indicator', type: 'dropdown', label: 'Interactive Odontogram Charting', required: false, options: ['Adult 32-Teeth Chart Active', 'Pediatric Deciduous Chart Active', 'Periodontal Screening Only'] },
+                { id: 'intraoral_findings', type: 'textarea', label: 'Intraoral & Periodontal Examination', required: false, placeholder: 'Caries detection, gingivitis, periodontal pocket depth, tooth mobility, oral mucosa...' },
+                { id: 'dental_procedure_indicated', type: 'dropdown', label: 'Dental Procedure Indicated', required: false, options: ['Dental Cleaning / Scaling', 'Composite Filling / Restoration', 'Root Canal Treatment (RCT)', 'Tooth Extraction', 'Crown / Bridge Placement', 'Orthodontic Evaluation', 'Dental Implant', 'Other Procedure'] },
+                { id: 'oral_hygiene_instructions', type: 'textarea', label: 'Oral Hygiene & Post-Treatment Instructions', required: false, placeholder: 'Brushing technique, flossing, mouth rinse, dietary recommendations...' }
+            ])
+        },
+        {
+            name: 'Orthopedic Assessment Template',
+            specialty: 'Orthopedics',
+            status: 'published',
+            version: 1,
+            fields: JSON.stringify([
+                { id: 'ortho_complaint', type: 'textarea', label: 'Chief Orthopedic Complaint & Affected Region', required: true, placeholder: 'Joint pain, stiffness, fracture, sports injury, swelling, trauma history...' },
+                { id: 'affected_body_region', type: 'dropdown', label: 'Affected Joint / Anatomical Region', required: false, options: ['Cervical Spine / Neck', 'Shoulder (Left)', 'Shoulder (Right)', 'Elbow / Forearm', 'Wrist / Hand', 'Lumbar Spine / Low Back', 'Hip / Pelvis', 'Knee (Left)', 'Knee (Right)', 'Ankle / Foot', 'Other / Multiple Joints'] },
+                { id: 'pain_scale', type: 'dropdown', label: 'Pain Severity Scale (1 - 10)', required: false, options: ['1 - Minimal', '2 - Mild', '3 - Mild', '4 - Moderate', '5 - Moderate', '6 - Moderately Severe', '7 - Severe', '8 - Very Severe', '9 - Extremely Severe', '10 - Maximum Pain'] },
+                { id: 'range_of_motion', type: 'textarea', label: 'Range of Motion & Joint Examination', required: false, placeholder: 'Active/passive ROM, joint stability, deformity, swelling, local temperature, tenderness...' },
+                { id: 'neurovascular_status', type: 'textarea', label: 'Neurovascular & Motor Assessment', required: false, placeholder: 'Peripheral pulses, motor power, sensory examination, deep tendon reflexes...' },
+                { id: 'orthopedic_plan', type: 'textarea', label: 'Imaging & Treatment Recommendations', required: false, placeholder: 'X-Ray / MRI orders, splinting / bracing, physical therapy, surgical consult...' }
+            ])
+        }
+    ];
+
+    const existingNames = new Set(templates.map(t => t.name.toLowerCase()));
+    for (const st of standardTemplates) {
+        if (!existingNames.has(st.name.toLowerCase())) {
+            try {
+                const created = await prisma.formtemplate.create({
+                    data: {
+                        clinicId: Number(clinicId),
+                        name: st.name,
+                        specialty: st.specialty,
+                        status: st.status,
+                        version: st.version,
+                        fields: st.fields
+                    }
+                });
+                templates.push(created);
+                existingNames.add(st.name.toLowerCase());
+            } catch (err) {
+                console.error(`Failed to auto-seed template ${st.name}:`, err);
+            }
+        }
+    }
+
+    return templates;
 };
 
 export const createFormTemplate = async (clinicId: number, data: any) => {

@@ -284,17 +284,94 @@ model patient {
 }
 
 model inventory {
-  id         Int       @id @default(autoincrement())
-  clinicId   Int
-  name       String
-  sku        String?
-  quantity   Int       @default(0)
-  unitPrice  Decimal   @db.Decimal(10, 2)
-  expiryDate DateTime?
-  updatedAt  DateTime  @default(now()) @updatedAt
-  clinic     clinic    @relation(fields: [clinicId], references: [id])
+  id            Int       @id @default(autoincrement())
+  clinicId      Int
+  name          String
+  sku           String?
+  batchNumber   String?
+  quantity      Int       @default(0)
+  reorderLevel  Int       @default(10)
+  maxStock      Int?      @default(100)
+  unitPrice     Decimal   @db.Decimal(10, 2)
+  purchasePrice Decimal?  @db.Decimal(10, 2)
+  supplier      String?
+  location      String?
+  status        String    @default("ACTIVE")
+  expiryDate    DateTime?
+  batches       Json?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+  clinic        clinic    @relation(fields: [clinicId], references: [id])
 
   @@index([clinicId])
+}
+
+model inventory_batch {
+  id            Int       @id @default(autoincrement())
+  clinicId      Int
+  inventoryId   Int
+  batchNumber   String
+  quantity      Int       @default(0)
+  expiryDate    DateTime
+  purchasePrice Decimal?  @db.Decimal(10, 2)
+  unitPrice     Decimal?  @db.Decimal(10, 2)
+  supplier      String?
+  location      String?
+  status        String    @default("ACTIVE")
+  receivedDate  DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  @@index([clinicId])
+  @@index([inventoryId])
+  @@index([batchNumber])
+  @@index([expiryDate])
+}
+
+model inventory_alert {
+  id             Int       @id @default(autoincrement())
+  clinicId       Int
+  inventoryId    Int
+  batchId        Int?
+  medicineName   String
+  batchNumber    String?
+  alertType      String    // EXPIRED, EXPIRING_SOON, LOW_STOCK, OUT_OF_STOCK
+  severity       String    // CRITICAL, HIGH, MEDIUM, LOW
+  currentStock   Int
+  reorderLevel   Int
+  expiryDate     DateTime?
+  supplier       String?
+  message        String    @db.Text
+  status         String    @default("ACTIVE") // ACTIVE, ACKNOWLEDGED, RESOLVED
+  acknowledgedBy String?
+  acknowledgedAt DateTime?
+  dateDetected   DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now()) @updatedAt
+
+  @@index([clinicId])
+  @@index([inventoryId])
+  @@index([alertType])
+  @@index([status])
+}
+
+model purchase_order {
+  id            Int       @id @default(autoincrement())
+  clinicId      Int
+  poNumber      String    @unique
+  supplier      String
+  status        String    @default("DRAFT") // DRAFT, ORDERED, RECEIVED, CANCELLED
+  totalAmount   Decimal   @db.Decimal(10, 2) @default(0)
+  items         Json
+  notes         String?   @db.Text
+  orderedBy     String?
+  orderedAt     DateTime?
+  receivedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  @@index([clinicId])
+  @@index([status])
 }
 
 model clinic_service {

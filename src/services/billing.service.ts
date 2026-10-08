@@ -49,12 +49,114 @@ const isModuleEnabled = (modulesData: any, serviceType: string): boolean => {
     return true;
 };
 
+const calculateOrderAmount = (order: any, clinicServices: any[]): { actualAmount: number; description: string } => {
+    let actualAmount = Number(order.amount || 0);
+    let description = `${order.type} Order: ${order.testName}`;
+    const orderType = (order.type || '').toUpperCase();
+
+    // Check result payload
+    let parsed: any = null;
+    if (order.result) {
+        try {
+            parsed = typeof order.result === 'string' ? JSON.parse(order.result) : order.result;
+        } catch (e) {}
+    }
+
+    if (orderType === 'PHARMACY') {
+        if (parsed) {
+            if (parsed.amount !== undefined && Number(parsed.amount) > 0) {
+                actualAmount = Number(parsed.amount);
+            } else if (parsed.totalAmount !== undefined && Number(parsed.totalAmount) > 0) {
+                actualAmount = Number(parsed.totalAmount);
+            } else if (parsed.unitPrice && parsed.quantity) {
+                actualAmount = Number(parsed.unitPrice) * Number(parsed.quantity);
+            } else if (parsed.items && Array.isArray(parsed.items)) {
+                const itemSum = parsed.items.reduce((sum: number, it: any) => sum + ((Number(it.unitPrice) || 0) * (Number(it.quantity) || 1)), 0);
+                if (itemSum > 0) actualAmount = itemSum;
+            }
+
+            if (parsed.items && Array.isArray(parsed.items)) {
+                if (typeof parsed.items[0] === 'object') {
+                    description = `Pharmacy: ${parsed.items.map((it: any) => `${it.medicineName || it.name} x${it.quantity || 1}`).join(', ')}`;
+                } else {
+                    description = `Pharmacy: ${parsed.items.join(', ')}`;
+                }
+            } else if (parsed.testName && parsed.quantity) {
+                description = `Pharmacy: ${parsed.testName} x${parsed.quantity}`;
+            } else if (parsed.items) {
+                description = `Pharmacy: ${parsed.items}`;
+            }
+        }
+    } else {
+        // LAB or RADIOLOGY or other service orders
+        if (actualAmount <= 0) {
+            if (parsed && (parsed.amount || parsed.price)) {
+                actualAmount = Number(parsed.amount || parsed.price);
+            }
+        }
+
+        // If still 0, look up from clinic services
+        if (actualAmount <= 0 && Array.isArray(clinicServices)) {
+            const testNameLower = (order.testName || '').toLowerCase().trim();
+            const matchedService = clinicServices.find(cs =>
+                cs.type?.toUpperCase() === orderType &&
+                (cs.name?.toLowerCase().trim() === testNameLower ||
+                 testNameLower.includes(cs.name?.toLowerCase().trim()) ||
+                 cs.name?.toLowerCase().trim().includes(testNameLower))
+            );
+            if (matchedService && matchedService.price) {
+                actualAmount = Number(matchedService.price);
+            }
+        }
+
+        // If still 0, provide standard baseline tariffs
+        if (actualAmount <= 0) {
+            const normalized = (order.testName || '').toLowerCase();
+            if (orderType === 'LAB') {
+                if (normalized.includes('cbc') || normalized.includes('hemogram')) actualAmount = 25;
+                else if (normalized.includes('hb') || normalized.includes('hemoglobin')) actualAmount = 15;
+                else if (normalized.includes('esr')) actualAmount = 10;
+                else if (normalized.includes('sugar') || normalized.includes('glucose') || normalized.includes('fbs') || normalized.includes('rbs') || normalized.includes('ppbs')) actualAmount = 12;
+                else if (normalized.includes('hba1c')) actualAmount = 30;
+                else if (normalized.includes('lft') || normalized.includes('liver')) actualAmount = 40;
+                else if (normalized.includes('kft') || normalized.includes('rft') || normalized.includes('kidney') || normalized.includes('renal')) actualAmount = 35;
+                else if (normalized.includes('lipid') || normalized.includes('cholesterol')) actualAmount = 35;
+                else if (normalized.includes('thyroid') || normalized.includes('tsh') || normalized.includes('t3')) actualAmount = 35;
+                else if (normalized.includes('urine') || normalized.includes('urinalysis')) actualAmount = 15;
+                else if (normalized.includes('crp')) actualAmount = 20;
+                else if (normalized.includes('dengue') || normalized.includes('malaria') || normalized.includes('widal') || normalized.includes('typhoid')) actualAmount = 25;
+                else if (normalized.includes('vitamin d') || normalized.includes('d3')) actualAmount = 45;
+                else if (normalized.includes('vitamin b12') || normalized.includes('b12')) actualAmount = 40;
+                else if (normalized.includes('calcium') || normalized.includes('electrolyte')) actualAmount = 25;
+                else actualAmount = 20;
+            } else if (orderType === 'RADIOLOGY') {
+                if (normalized.includes('x-ray') || normalized.includes('xray')) actualAmount = 45;
+                else if (normalized.includes('ultrasound') || normalized.includes('usg') || normalized.includes('sonography')) actualAmount = 65;
+                else if (normalized.includes('ct') || normalized.includes('hrct') || normalized.includes('computed')) actualAmount = 130;
+                else if (normalized.includes('mri')) actualAmount = 220;
+                else if (normalized.includes('ecg') || normalized.includes('ekg')) actualAmount = 25;
+                else if (normalized.includes('echo')) actualAmount = 85;
+                else if (normalized.includes('tmt')) actualAmount = 75;
+                else if (normalized.includes('dexa')) actualAmount = 90;
+                else actualAmount = 50;
+            }
+        }
+    }
+
+    return { actualAmount, description };
+};
+
 export const getPendingBillingItems = async (clinicId: number, patientId: number) => {
-    // Fetch clinic enabled modules
-    const clinic = await prisma.clinic.findUnique({
-        where: { id: clinicId },
-        select: { modules: true }
-    });
+    // Fetch clinic enabled modules & services
+    const [clinic, clinicServices] = await Promise.all([
+        prisma.clinic.findUnique({
+            where: { id: clinicId },
+            select: { modules: true }
+        }),
+        prisma.clinic_service.findMany({
+            where: { clinicId, isActive: true }
+        })
+    ]);
 
     // Find all item IDs already in an active (Pending or Paid) invoice for this clinic
     const invoicedItems = await prisma.invoice_item.findMany({
@@ -118,40 +220,7 @@ export const getPendingBillingItems = async (clinicId: number, patientId: number
             date: a.date
         })),
         orders: pendingOrders.map(o => {
-            let actualAmount = Number(o.amount || 0);
-            let description = `${o.type} Order: ${o.testName}`;
-
-            // Parse result for Pharmacy orders to get dynamic amount and real items
-            if (o.type.toUpperCase() === 'PHARMACY' && o.result) {
-                try {
-                    const parsed = JSON.parse(o.result);
-
-                    // Priority 1: Direct amount field
-                    if (parsed.amount !== undefined) {
-                        actualAmount = Number(parsed.amount);
-                    }
-                    // Priority 2: totalAmount from doctor payload
-                    else if (parsed.totalAmount !== undefined) {
-                        actualAmount = Number(parsed.totalAmount);
-                    }
-                    // Priority 3: Derived from components (unitPrice * quantity)
-                    else if (parsed.unitPrice && parsed.quantity) {
-                        actualAmount = Number(parsed.unitPrice) * Number(parsed.quantity);
-                    }
-
-                    // Handle Description
-                    if (parsed.items && Array.isArray(parsed.items)) {
-                        description = `Pharmacy: ${parsed.items.join(', ')}`;
-                    } else if (parsed.testName && parsed.quantity) {
-                        description = `Pharmacy: ${parsed.testName} x${parsed.quantity}`;
-                    } else if (parsed.items) {
-                        description = `Pharmacy: ${parsed.items}`;
-                    }
-                } catch (e) {
-                    console.error("Failed to parse pharmacy order result for billing:", o.id);
-                }
-            }
-
+            const { actualAmount, description } = calculateOrderAmount(o, clinicServices);
             return {
                 id: o.id,
                 type: o.type.toLowerCase(),
@@ -164,10 +233,15 @@ export const getPendingBillingItems = async (clinicId: number, patientId: number
 };
 
 export const getAllPendingBillingPatients = async (clinicId: number) => {
-    const clinic = await prisma.clinic.findUnique({
-        where: { id: clinicId },
-        select: { modules: true }
-    });
+    const [clinic, clinicServices] = await Promise.all([
+        prisma.clinic.findUnique({
+            where: { id: clinicId },
+            select: { modules: true }
+        }),
+        prisma.clinic_service.findMany({
+            where: { clinicId, isActive: true }
+        })
+    ]);
 
     const invoicedItems = await prisma.invoice_item.findMany({
         where: {
@@ -261,30 +335,7 @@ export const getAllPendingBillingPatients = async (clinicId: number) => {
             });
         }
         const data = patientMap.get(pId);
-        let actualAmount = Number(order.amount || 0);
-        let description = `${order.type} Order: ${order.testName}`;
-
-        if (order.type.toUpperCase() === 'PHARMACY' && order.result) {
-            try {
-                const parsed = JSON.parse(order.result);
-                if (parsed.amount !== undefined) {
-                    actualAmount = Number(parsed.amount);
-                } else if (parsed.totalAmount !== undefined) {
-                    actualAmount = Number(parsed.totalAmount);
-                } else if (parsed.unitPrice && parsed.quantity) {
-                    actualAmount = Number(parsed.unitPrice) * Number(parsed.quantity);
-                }
-                if (parsed.items && Array.isArray(parsed.items)) {
-                    description = `Pharmacy: ${parsed.items.join(', ')}`;
-                } else if (parsed.testName && parsed.quantity) {
-                    description = `Pharmacy: ${parsed.testName} x${parsed.quantity}`;
-                } else if (parsed.items) {
-                    description = `Pharmacy: ${parsed.items}`;
-                }
-            } catch (e) {
-                console.error("Failed to parse pharmacy order result for billing:", order.id);
-            }
-        }
+        const { actualAmount, description } = calculateOrderAmount(order, clinicServices);
 
         data.orders.push({
             id: order.id,

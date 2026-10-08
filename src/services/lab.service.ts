@@ -73,6 +73,7 @@ export const uploadReport = async (clinicId: number, orderId: number, reportCont
     });
 
     if (!order) throw new AppError('Order not found', 404);
+    if (order.paymentStatus !== 'Paid') throw new AppError('Payment required before uploading report', 400);
     if (order.testStatus !== 'Sample Collected') throw new AppError('Sample must be collected before uploading result', 400);
 
     return await updateLabStatus(clinicId, orderId, 'Completed', reportContent);
@@ -88,6 +89,10 @@ export const completeLabOrder = async (clinicId: number, orderId: number, data: 
     });
 
     if (!order) throw new AppError('Order not found', 404);
+
+    if (order.paymentStatus !== 'Paid') {
+        throw new AppError('Payment required before uploading report or completing order.', 400);
+    }
 
     // We maintain backward compatibility but enforce the new status name 'Completed'
     const updateData: any = { testStatus: 'Completed' };

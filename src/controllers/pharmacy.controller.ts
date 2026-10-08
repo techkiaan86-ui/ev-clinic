@@ -126,6 +126,144 @@ export const getNotifications = async (req: any, res: Response, next: NextFuncti
     }
 };
 
+export const getInventoryItem = async (req: any, res: Response, next: NextFunction) => {
+    try {
+        const clinicId = req.clinicId;
+        const id = Number(req.params.id);
+        const item = await pharmacyService.getInventoryItem(clinicId, id);
+        res.json({ status: 'success', data: item });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getBatches = async (req: any, res: Response, next: NextFunction) => {
+    try {
+        const clinicId = req.clinicId;
+        const inventoryId = req.params.id ? Number(req.params.id) : (req.query.inventoryId ? Number(req.query.inventoryId) : undefined);
+        const batches = await pharmacyService.getBatches(clinicId, inventoryId);
+        res.json({ status: 'success', data: batches });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const addBatch = async (req: any, res: Response, next: NextFunction) => {
+    try {
+        const clinicId = req.clinicId;
+        const inventoryId = Number(req.params.id);
+        const batch = await pharmacyService.addBatch(clinicId, inventoryId, req.body);
+        res.status(201).json({ status: 'success', data: batch });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const updateBatch = async (req: any, res: Response, next: NextFunction) => {
+    try {
+        const clinicId = req.clinicId;
+        const batchId = Number(req.params.batchId);
+        const batch = await pharmacyService.updateBatch(clinicId, batchId, req.body);
+        res.json({ status: 'success', data: batch });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const deleteBatch = async (req: any, res: Response, next: NextFunction) => {
+    try {
+        const clinicId = req.clinicId;
+        const batchId = Number(req.params.batchId);
+        await pharmacyService.deleteBatch(clinicId, batchId);
+        res.json({ status: 'success', message: 'Batch removed' });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getAlerts = async (req: any, res: Response, next: NextFunction) => {
+    try {
+        const clinicId = req.clinicId;
+        const { type, severity, status, search, expiringDays } = req.query;
+        const result = await pharmacyService.getInventoryAlerts(clinicId, {
+            type: type ? String(type) : undefined,
+            severity: severity ? String(severity) : undefined,
+            status: status ? String(status) : undefined,
+            search: search ? String(search) : undefined,
+            expiringDays: expiringDays ? Number(expiringDays) : undefined
+        });
+        res.json({ status: 'success', data: result });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const acknowledgeAlert = async (req: any, res: Response, next: NextFunction) => {
+    try {
+        const clinicId = req.clinicId;
+        const alertId = Number(req.params.alertId);
+        const userName = req.user?.name || req.body?.userName || 'Staff';
+        const updated = await pharmacyService.acknowledgeAlert(clinicId, alertId, userName);
+        res.json({ status: 'success', data: updated });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getAlertSettings = async (req: any, res: Response, next: NextFunction) => {
+    try {
+        const clinicId = req.clinicId;
+        const settings = await pharmacyService.getAlertSettings(clinicId);
+        res.json({ status: 'success', data: settings });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const saveAlertSettings = async (req: any, res: Response, next: NextFunction) => {
+    try {
+        const clinicId = req.clinicId;
+        const settings = await pharmacyService.saveAlertSettings(clinicId, req.body);
+        res.json({ status: 'success', data: settings });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getPurchaseOrders = async (req: any, res: Response, next: NextFunction) => {
+    try {
+        const clinicId = req.clinicId;
+        const { status } = req.query;
+        const orders = await pharmacyService.getPurchaseOrders(clinicId, { status: status ? String(status) : undefined });
+        res.json({ status: 'success', data: orders });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const createPurchaseOrder = async (req: any, res: Response, next: NextFunction) => {
+    try {
+        const clinicId = req.clinicId;
+        const userName = req.user?.name || 'Staff';
+        const po = await pharmacyService.createPurchaseOrder(clinicId, req.body, userName);
+        res.status(201).json({ status: 'success', data: po });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const updatePurchaseOrderStatus = async (req: any, res: Response, next: NextFunction) => {
+    try {
+        const clinicId = req.clinicId;
+        const id = Number(req.params.id);
+        const { status, receiveDetails } = req.body;
+        const updated = await pharmacyService.updatePurchaseOrderStatus(clinicId, id, status, receiveDetails);
+        res.json({ status: 'success', data: updated });
+    } catch (error) {
+        next(error);
+    }
+};
+
 export const getReports = async (req: any, res: Response, next: NextFunction) => {
     try {
         const clinicId = req.clinicId;
