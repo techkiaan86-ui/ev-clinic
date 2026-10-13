@@ -14,12 +14,13 @@ import {
     deleteClaimDocument,
     validateClaim
 } from '../controllers/insurance.controller.js';
-import { protect } from '../middlewares/auth.js';
+import { protect, ensureClinicContext } from '../middlewares/auth.js';
 
 const router = Router();
+router.use(protect, ensureClinicContext);
 
 // Coverage routes
-router.get('/patients/:patientId/coverage', protect, getPatientCoverages);
+router.get('/patients/:patientId/coverage', getPatientCoverages);
 router.post('/patients/:patientId/coverage', protect, createPatientCoverage);
 router.put('/coverage/:id', protect, updatePatientCoverage);
 router.delete('/coverage/:id', protect, deletePatientCoverage);

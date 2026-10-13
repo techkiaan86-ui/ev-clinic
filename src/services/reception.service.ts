@@ -3,7 +3,7 @@ import { AppError } from '../utils/AppError.js';
 import { isSlotConfirmed, isDoctorSlotBooked, isDoctorOnDayOff } from '../utils/slotLock.js';
 import { sendAppointmentBookingConfirmation, sendAppointmentReminder, generateWhatsAppWebUrl } from './whatsapp.service.js';
 
-const getNextToken = async (clinicId: number) => {
+export const getNextToken = async (clinicId: number) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 

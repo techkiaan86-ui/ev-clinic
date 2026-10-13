@@ -1,23 +1,31 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { AppError } from '../utils/AppError.js';
+import { isClinicLicenseExpired } from '../middlewares/auth.js';
 import { isSlotConfirmed, isDoctorSlotBooked, isDoctorOnDayOff, normalizeTime } from '../utils/slotLock.js';
 import { sendAppointmentBookingConfirmation } from './whatsapp.service.js';
+import { getNextToken } from './reception.service.js';
 
 const prisma = new PrismaClient();
 
 export const getClinicBySubdomain = async (subdomain: string) => {
-    // Allow lookup by subdomain OR id (for robustness)
+    const raw = decodeURIComponent(subdomain || '').trim();
+    const isNum = !isNaN(Number(raw));
+
+    // Allow lookup by subdomain (exact or lower), numeric ID, or name
     const clinic = await prisma.clinic.findFirst({
         where: {
             OR: [
-                { subdomain: subdomain },
-                { id: !isNaN(Number(subdomain)) ? Number(subdomain) : -1 }
+                { subdomain: raw },
+                { subdomain: raw.toLowerCase() },
+                { id: isNum ? Number(raw) : -1 },
+                { name: { contains: raw } }
             ]
         },
         select: {
             id: true,
             name: true,
+            subdomain: true,
             logo: true,
             location: true,
             email: true,
@@ -33,17 +41,24 @@ export const getClinicBySubdomain = async (subdomain: string) => {
     // Parse booking config if exists
     let config = null;
     if (clinic.bookingConfig) {
-        try { config = JSON.parse(clinic.bookingConfig); } catch (e) { config = null; }
+        try { config = typeof clinic.bookingConfig === 'string' ? JSON.parse(clinic.bookingConfig) : clinic.bookingConfig; } catch (e) { config = null; }
     }
 
     return { ...clinic, bookingConfig: config };
 };
 
 export const getClinicDoctors = async (clinicId: number) => {
-    return await prisma.clinicstaff.findMany({
+    const numId = Number(clinicId);
+    if (!numId || isNaN(numId)) return [];
+
+    // First: Look for staff with role 'DOCTOR' or with DOCTOR in roles array
+    const doctors = await prisma.clinicstaff.findMany({
         where: {
-            clinicId,
-            role: 'DOCTOR',
+            clinicId: numId,
+            OR: [
+                { role: 'DOCTOR' },
+                { roles: { contains: 'DOCTOR' } }
+            ],
             user: { status: 'active' }
         },
         include: {
@@ -56,6 +71,30 @@ export const getClinicDoctors = async (clinicId: number) => {
             }
         }
     });
+
+    if (doctors.length > 0) {
+        return doctors;
+    }
+
+    // Fallback: If no staff is explicitly designated as DOCTOR (e.g. solo practitioner / dental clinic),
+    // include active clinic staff so patients can still book an appointment
+    const fallbackStaff = await prisma.clinicstaff.findMany({
+        where: {
+            clinicId: numId,
+            user: { status: 'active' }
+        },
+        include: {
+            user: {
+                select: {
+                    id: true,
+                    name: true,
+                    email: true
+                }
+            }
+        }
+    });
+
+    return fallbackStaff;
 };
 
 export const getDoctorAvailability = async (doctorId: number, date?: string) => {
@@ -108,6 +147,25 @@ export const getDoctorAvailability = async (doctorId: number, date?: string) => 
 export const createPublicBooking = async (data: any) => {
     const { name, email, phone, password, doctorId, clinicId, date, time, notes, service } = data;
 
+    const numericClinicId = Number(clinicId);
+    const numericDoctorId = Number(doctorId);
+
+    if (!numericClinicId || isNaN(numericClinicId)) {
+        throw new AppError('Valid clinicId is required.', 400);
+    }
+    if (!numericDoctorId || isNaN(numericDoctorId)) {
+        throw new AppError('Valid doctorId is required.', 400);
+    }
+
+    // 0. Verify clinic exists and license is not expired
+    const targetClinic = await prisma.clinic.findUnique({
+        where: { id: numericClinicId },
+        select: { status: true, subscriptionEnd: true, isActive: true }
+    });
+    if (!targetClinic || isClinicLicenseExpired(targetClinic)) {
+        throw new AppError('This clinic is currently inactive or its license has expired. Bookings are temporarily unavailable.', 403);
+    }
+
     // 1. Find or Create User
     let user = await prisma.user.findUnique({ where: { email } });
     if (!user) {
@@ -125,7 +183,7 @@ export const createPublicBooking = async (data: any) => {
 
     // 2. Ensure Patient record exists for this clinic
     let patient = await prisma.patient.findFirst({
-        where: { email, clinicId }
+        where: { email, clinicId: numericClinicId }
     });
 
     if (!patient) {
@@ -134,37 +192,46 @@ export const createPublicBooking = async (data: any) => {
                 name,
                 email,
                 phone,
-                clinicId,
+                clinicId: numericClinicId,
                 status: 'Active'
             }
         });
     }
 
     // Prevent booking on Doctor's scheduled Day Off
-    if (doctorId && date) {
-        const offDayCheck = await isDoctorOnDayOff(prisma, Number(clinicId), Number(doctorId), date);
+    if (numericDoctorId && date) {
+        const offDayCheck = await isDoctorOnDayOff(prisma, numericClinicId, numericDoctorId, date);
         if (offDayCheck.isOff) {
             throw new AppError(offDayCheck.reason || 'The doctor is not scheduled on this day.', 400);
         }
     }
 
     // Check if slot is already booked for this doctor
-    const alreadyBooked = await isDoctorSlotBooked(prisma, Number(clinicId), Number(doctorId), date, time);
+    const alreadyBooked = await isDoctorSlotBooked(prisma, numericClinicId, numericDoctorId, date, time);
     if (alreadyBooked) {
         throw new AppError(`The selected time slot (${time}) is already booked for this doctor. Please choose a different time slot.`, 400);
+    }
+
+    // Generate token number for queue
+    let tokenNumber: number | null = null;
+    try {
+        tokenNumber = await getNextToken(numericClinicId);
+    } catch (e) {
+        console.error('Failed to generate token number:', e);
     }
 
     // 3. Create Appointment
     const appointment = await prisma.appointment.create({
         data: {
-            clinicId,
+            clinicId: numericClinicId,
             patientId: patient.id,
-            doctorId,
+            doctorId: numericDoctorId,
             date: new Date(date),
             time,
             notes,
             service: service || 'General Consultation',
             status: 'Pending',
+            tokenNumber,
             source: 'Online Booking'
         }
     });

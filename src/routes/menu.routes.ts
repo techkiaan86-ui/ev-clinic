@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { getMenu } from '../controllers/menu.controller.js';
-import { protect } from '../middlewares/auth.js';
+import { protect, ensureClinicContext } from '../middlewares/auth.js';
 
 const router = Router();
 
-router.get('/:role', protect, getMenu);
-router.get('/', protect, getMenu);
+router.use(protect, ensureClinicContext);
+router.get('/:role', getMenu);
+router.get('/', getMenu);
 
 export default router;

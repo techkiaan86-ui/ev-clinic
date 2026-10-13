@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../utils/AppError.js';
+import { isClinicLicenseExpired } from '../middlewares/auth.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -102,17 +103,17 @@ export const login = async (data: any, ip: string, device: string) => {
         // Find all clinics where this patient is registered (by email)
         const patientRecords = await prisma.patient.findMany({
             where: { email: user.email },
-            include: { clinic: { select: { id: true, name: true, location: true, status: true, logo: true } } }
+            include: { clinic: { select: { id: true, name: true, location: true, status: true, logo: true, subscriptionEnd: true, isActive: true } } }
         });
 
         if (patientRecords.length === 0) {
             throw new AppError('No clinic registration found for this patient. Please contact your clinic.', 403);
         }
 
-        // Filter to active clinics only
-        const activeClinics = patientRecords.filter(p => (p.clinic.status || '').toLowerCase() === 'active');
+        // Filter to active and unexpired clinics only
+        const activeClinics = patientRecords.filter(p => !isClinicLicenseExpired(p.clinic));
         if (activeClinics.length === 0) {
-            throw new AppError('All your registered clinics are currently inactive. Please contact your clinic administrator.', 403);
+            throw new AppError('LICENSE_EXPIRED: Please contact Exclusive vision for your license.', 403);
         }
 
         let targetClinicId: number | undefined = undefined;
@@ -120,11 +121,20 @@ export const login = async (data: any, ip: string, device: string) => {
 
         if (activeClinics.length === 1) {
             targetClinicId = activeClinics[0].clinicId;
+            const c = activeClinics[0].clinic;
+            const now = new Date();
+            const subEnd = c.subscriptionEnd ? new Date(c.subscriptionEnd) : null;
+            const daysRemaining = subEnd ? Math.ceil((subEnd.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : 0;
             patientClinicPayload = {
-                id: activeClinics[0].clinic.id,
-                name: activeClinics[0].clinic.name,
-                location: activeClinics[0].clinic.location || '',
-                role: 'PATIENT'
+                id: c.id,
+                name: c.name,
+                location: c.location || '',
+                role: 'PATIENT',
+                subscriptionEnd: c.subscriptionEnd,
+                daysRemaining: daysRemaining > 0 ? daysRemaining : 0,
+                status: c.status || 'active',
+                isActive: c.isActive !== false,
+                isExpired: false
             };
         }
 
@@ -157,12 +167,22 @@ export const login = async (data: any, ip: string, device: string) => {
                 role: 'PATIENT',
                 roles: ['PATIENT'],
                 clinics: activeClinics.map(p => p.clinicId),
-                patientClinics: activeClinics.map(p => ({
-                    id: p.clinic.id,
-                    name: p.clinic.name,
-                    location: p.clinic.location,
-                    patientId: p.id
-                }))
+                patientClinics: activeClinics.map(p => {
+                    const now = new Date();
+                    const subEnd = p.clinic.subscriptionEnd ? new Date(p.clinic.subscriptionEnd) : null;
+                    const daysRemaining = subEnd ? Math.ceil((subEnd.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : 0;
+                    return {
+                        id: p.clinic.id,
+                        name: p.clinic.name,
+                        location: p.clinic.location,
+                        patientId: p.id,
+                        subscriptionEnd: p.clinic.subscriptionEnd,
+                        daysRemaining: daysRemaining > 0 ? daysRemaining : 0,
+                        status: p.clinic.status || 'active',
+                        isActive: p.clinic.isActive !== false,
+                        isExpired: false
+                    };
+                })
             },
             clinic: patientClinicPayload,
             token
@@ -170,14 +190,14 @@ export const login = async (data: any, ip: string, device: string) => {
     }
     // ── End PATIENT flow ─────────────────────────────────────────────────────
 
-    // Block login if user is not SUPER_ADMIN and ALL their clinics are inactive
+    // Block login if user is not SUPER_ADMIN and ALL their clinics are inactive or expired
     const isSuperAdminEarly = user.role === 'SUPER_ADMIN';
     if (!isSuperAdminEarly && staffRecords.length > 0) {
         const hasActiveClinic = staffRecords.some(
-            (r: any) => (r.clinic?.status || '').toLowerCase() === 'active'
+            (r: any) => !isClinicLicenseExpired(r.clinic)
         );
         if (!hasActiveClinic) {
-            throw new AppError('Your clinic account is currently inactive. Please contact your administrator.', 403);
+            throw new AppError('LICENSE_EXPIRED: Please contact Exclusive vision for your license.', 403);
         }
     }
 
@@ -204,10 +224,16 @@ export const login = async (data: any, ip: string, device: string) => {
     if (isSuperAdmin) {
         tokenRole = 'SUPER_ADMIN';
     } else if (staffRecords.length === 1) {
+        const c = staffRecords[0].clinic;
+        if (c && isClinicLicenseExpired(c)) {
+            throw new AppError('LICENSE_EXPIRED: Please contact Exclusive vision for your license.', 403);
+        }
         tokenRole = staffRecords[0].role;
         targetClinicId = staffRecords[0].clinicId;
-        if (staffRecords[0].clinic) {
-            const c = staffRecords[0].clinic;
+        if (c) {
+            const now = new Date();
+            const subEnd = c.subscriptionEnd ? new Date(c.subscriptionEnd) : null;
+            const daysRemaining = subEnd ? Math.ceil((subEnd.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : 0;
             singleClinicPayload = {
                 id: c.id,
                 name: c.name,
@@ -216,7 +242,9 @@ export const login = async (data: any, ip: string, device: string) => {
                 modules: c.modules,
                 status: c.status,
                 isActive: c.isActive !== false,
-                subscriptionEnd: c.subscriptionEnd
+                subscriptionEnd: c.subscriptionEnd,
+                daysRemaining: daysRemaining > 0 ? daysRemaining : 0,
+                isExpired: false
             };
         }
     } else if (staffRecords.length > 1) {
@@ -391,6 +419,38 @@ export const getMyClinics = async (userId: number) => {
         });
     }
 
+    // If Patient role or staffRecords is empty, look up patient clinic records
+    if (user.role === 'PATIENT' || staffRecords.length === 0) {
+        const patientRecords = await prisma.patient.findMany({
+            where: { email: user.email },
+            include: { clinic: true }
+        });
+        const patientSeen = new Set<number>();
+        const now = new Date();
+        return patientRecords
+            .filter((p: any) => p.clinic && !patientSeen.has(p.clinic.id) && patientSeen.add(p.clinic.id))
+            .map((p: any) => {
+                const isExp = isClinicLicenseExpired(p.clinic);
+                const subEnd = p.clinic.subscriptionEnd ? new Date(p.clinic.subscriptionEnd) : null;
+                const daysRemaining = subEnd
+                    ? Math.ceil((subEnd.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+                    : 0;
+                return {
+                    id: p.clinic.id,
+                    name: p.clinic.name,
+                    role: 'PATIENT',
+                    modules: { pharmacy: true, radiology: true, laboratory: true, billing: true },
+                    location: p.clinic.location,
+                    status: isExp ? 'inactive' : (p.clinic.status || 'active'),
+                    isActive: !isExp,
+                    subscriptionPlan: p.clinic.subscriptionPlan,
+                    subscriptionEnd: p.clinic.subscriptionEnd,
+                    daysRemaining: isExp ? 0 : (daysRemaining > 0 ? daysRemaining : 0),
+                    isExpired: isExp
+                };
+            });
+    }
+
     // For other users, return clinics they are assigned to
     // Deduplicate by clinic id (user can have multiple roles in same clinic)
     const seen = new Set<number>();
@@ -413,7 +473,7 @@ export const getMyClinics = async (userId: number) => {
                 }
             }
 
-            const isExpired = record.clinic.subscriptionEnd ? now > new Date(record.clinic.subscriptionEnd) : false;
+            const isExp = isClinicLicenseExpired(record.clinic);
             const daysRemaining = record.clinic.subscriptionEnd
                 ? Math.ceil((new Date(record.clinic.subscriptionEnd).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
                 : 0;
@@ -424,11 +484,12 @@ export const getMyClinics = async (userId: number) => {
                 role: record.role,
                 modules,
                 location: record.clinic.location,
-                status: record.clinic.status,
+                status: isExp ? 'inactive' : (record.clinic.status || 'active'),
+                isActive: !isExp,
                 subscriptionPlan: record.clinic.subscriptionPlan,
                 subscriptionEnd: record.clinic.subscriptionEnd,
-                daysRemaining: daysRemaining > 0 ? daysRemaining : 0,
-                isExpired: isExpired || daysRemaining <= 0 || (record.clinic.status || '').toLowerCase() !== 'active' || !record.clinic.isActive
+                daysRemaining: isExp ? 0 : (daysRemaining > 0 ? daysRemaining : 0),
+                isExpired: isExp
             };
         });
 };
@@ -451,13 +512,7 @@ export const selectClinic = async (userId: number, clinicId: number, role: strin
             throw new AppError('You are not registered in this clinic', 403);
         }
 
-        const now = new Date();
-        const isExp = patientRecord.clinic.subscriptionEnd ? now > new Date(patientRecord.clinic.subscriptionEnd) : false;
-        const daysLeft = patientRecord.clinic.subscriptionEnd
-            ? Math.ceil((new Date(patientRecord.clinic.subscriptionEnd).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
-            : 0;
-
-        if (isExp || daysLeft <= 0 || (patientRecord.clinic.status || '').toLowerCase() !== 'active' || !patientRecord.clinic.isActive) {
+        if (isClinicLicenseExpired(patientRecord.clinic)) {
             throw new AppError('LICENSE_EXPIRED: Please contact Exclusive vision for your license.', 403);
         }
 
@@ -503,16 +558,8 @@ export const selectClinic = async (userId: number, clinicId: number, role: strin
             where: { id: clinicId },
             select: { status: true, name: true, subscriptionEnd: true, isActive: true }
         });
-        if (clinic) {
-            const now = new Date();
-            const isExp = clinic.subscriptionEnd ? now > new Date(clinic.subscriptionEnd) : false;
-            const daysLeft = clinic.subscriptionEnd
-                ? Math.ceil((new Date(clinic.subscriptionEnd).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
-                : 0;
-
-            if (isExp || daysLeft <= 0 || (clinic.status || '').toLowerCase() !== 'active' || !clinic.isActive) {
-                throw new AppError('LICENSE_EXPIRED: Please contact Exclusive vision for your license.', 403);
-            }
+        if (isClinicLicenseExpired(clinic)) {
+            throw new AppError('LICENSE_EXPIRED: Please contact Exclusive vision for your license.', 403);
         }
     }
 
@@ -690,10 +737,10 @@ export const impersonate = async (superAdminId: number, targetUserId: number, ip
             modules,
             subscriptionPlan: targetClinic.subscriptionPlan,
             subscriptionEnd: targetClinic.subscriptionEnd,
-            daysRemaining: daysRemaining > 0 ? daysRemaining : 0,
-            isExpired: isExpired || daysRemaining <= 0 || (targetClinic.status || '').toLowerCase() !== 'active' || !targetClinic.isActive,
-            status: targetClinic.status,
-            isActive: targetClinic.isActive !== false
+            daysRemaining: isClinicLicenseExpired(targetClinic) ? 0 : (daysRemaining > 0 ? daysRemaining : 0),
+            isExpired: isClinicLicenseExpired(targetClinic),
+            status: isClinicLicenseExpired(targetClinic) ? 'inactive' : (targetClinic.status || 'active'),
+            isActive: !isClinicLicenseExpired(targetClinic)
         } : null,
         token
     };
@@ -809,10 +856,10 @@ export const impersonateClinic = async (superAdminId: number, clinicId: number, 
             modules,
             subscriptionPlan: targetClinic?.subscriptionPlan,
             subscriptionEnd: targetClinic?.subscriptionEnd,
-            daysRemaining: daysRemaining > 0 ? daysRemaining : 0,
-            isExpired: isExpired || daysRemaining <= 0 || (targetClinic?.status || '').toLowerCase() !== 'active' || !targetClinic?.isActive,
-            status: targetClinic?.status,
-            isActive: targetClinic?.isActive !== false
+            daysRemaining: isClinicLicenseExpired(targetClinic) ? 0 : (daysRemaining > 0 ? daysRemaining : 0),
+            isExpired: isClinicLicenseExpired(targetClinic),
+            status: isClinicLicenseExpired(targetClinic) ? 'inactive' : (targetClinic?.status || 'active'),
+            isActive: !isClinicLicenseExpired(targetClinic)
         },
         token
     };

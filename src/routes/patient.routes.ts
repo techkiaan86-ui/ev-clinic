@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import * as patientController from '../controllers/patient.controller.js';
-import { protect, restrictTo } from '../middlewares/auth.js';
+import { protect, restrictTo, ensureClinicContext } from '../middlewares/auth.js';
 
 const router = Router();
 
@@ -11,6 +11,7 @@ router.post('/public-book', patientController.publicBookAppointment);
 // All routes below require authentication and PATIENT role
 router.use(protect);
 router.use(restrictTo('PATIENT', 'ADMIN', 'RECEPTIONIST'));
+router.use(ensureClinicContext);
 
 router.get('/appointments', patientController.getMyAppointments);
 router.delete('/appointments/:appointmentId', patientController.cancelAppointment);

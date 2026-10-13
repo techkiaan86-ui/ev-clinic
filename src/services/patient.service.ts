@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../utils/AppError.js';
+import { isClinicLicenseExpired } from '../middlewares/auth.js';
 import bcrypt from 'bcryptjs';
 import { isSlotConfirmed, isDoctorSlotBooked, isDoctorOnDayOff, normalizeTime } from '../utils/slotLock.js';
 import { sendAppointmentBookingConfirmation } from './whatsapp.service.js';
@@ -492,6 +493,15 @@ export const getMyActivity = async (userId: number, email: string, clinicId?: nu
 };
 
 export const bookAppointment = async (userId: number, email: string, data: CreateAppointmentData) => {
+    // 0. Verify clinic exists and license is not expired
+    const targetClinic = await prisma.clinic.findUnique({
+        where: { id: Number(data.clinicId) },
+        select: { status: true, subscriptionEnd: true, isActive: true }
+    });
+    if (!targetClinic || isClinicLicenseExpired(targetClinic)) {
+        throw new AppError('This clinic is currently inactive or its license has expired. Bookings are temporarily unavailable.', 403);
+    }
+
     // 1. Find or create the patient record for this specific clinic
     let patient = await prisma.patient.findFirst({
         where: {
@@ -562,6 +572,15 @@ export const publicBookAppointment = async (data: any) => {
         if (!clinicId || isNaN(Number(clinicId))) throw new AppError('Valid Clinic ID is required', 400);
         if (!doctorId || isNaN(Number(doctorId))) throw new AppError('Valid Doctor ID is required', 400);
         if (!date) throw new AppError('Date is required', 400);
+
+        // 0. Verify clinic exists and license is not expired
+        const targetClinic = await prisma.clinic.findUnique({
+            where: { id: Number(clinicId) },
+            select: { status: true, subscriptionEnd: true, isActive: true }
+        });
+        if (!targetClinic || isClinicLicenseExpired(targetClinic)) {
+            throw new AppError('This clinic is currently inactive or its license has expired. Bookings are temporarily unavailable.', 403);
+        }
 
         // 1. Find or create User - and UPDATE if exists
         let user = await prisma.user.findUnique({ where: { email } });
